@@ -92,9 +92,14 @@ ask(YES) + ask(NO) = (100 - bid_NO) + (100 - bid_YES) = 200 - (bid_YES + bid_NO)
 
 so `ask(YES) + ask(NO) < 100c` requires `bid_YES + bid_NO > 100c` — which is
 precisely the condition under which the matching engine crosses those two
-resting orders and trades them. **A non-crossed book cannot exhibit it.** This
-is not a threshold that fees make hard to clear; it is a state the exchange
-does not permit to persist.
+resting orders and trades them.
+
+**A crossed book cannot _persist_; it is not that it never exists.** The state
+is reachable between an order's arrival and the engine matching it. What bounds
+it is the engine's internal latency, which is far below anything reachable from
+outside the exchange — so the window is neither observable nor actionable by us.
+This is the general form of every latency argument in the project; see
+`docs/PHASE0_REPORT.md` section 0.
 
 Measured 2026-08-02 across 190 two-sided books sampled from crypto, NFL, MLB,
 WNBA, Fed, CPI and weather series:

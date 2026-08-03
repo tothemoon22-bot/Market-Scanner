@@ -18,15 +18,23 @@ are reference data only and are never traded.
 
 | Phase | State |
 | --- | --- |
-| 0 — Research | **Complete, awaiting gate approval.** See [`docs/PHASE0_REPORT.md`](docs/PHASE0_REPORT.md) |
+| 0 — Research | Complete. [`docs/PHASE0_REPORT.md`](docs/PHASE0_REPORT.md) |
+| 0.5 — Kill-shot experiments | **Complete, awaiting gate approval.** [`research/PHASE05_REPORT.md`](research/PHASE05_REPORT.md) |
 
-> Phase 0 finding that changes the Phase 2 scope: **Detector 1 (single-market
-> complementary) is structurally impossible, not merely unprofitable.** Kalshi
-> runs one book per market, so `ask(YES) + ask(NO) < 100c` is the same condition
-> as `bid(YES) + bid(NO) > 100c`, which the matching engine crosses on sight.
-> Confirmed against 190 live books. Detectors 2–5 compare distinct markets with
-> distinct books and are unaffected. Detail in
-> [`docs/PHASE0_REPORT.md`](docs/PHASE0_REPORT.md) section 0.
+> **Phase 0.5a returned NO-GO for taker-side detection.** Median spread across
+> 44,453 two-sided Kalshi books is 6c, so a 4-leg basket needs a 19c mispricing
+> before it is visible — the spread term dominates the fee term at every leg
+> count. Measured directly: the median mutually-exclusive basket costs +4c over
+> par. The exception is roughly 200 markets in fee-free and maker-fee series,
+> quoted six times tighter. Detail in
+> [`research/PHASE05_REPORT.md`](research/PHASE05_REPORT.md) and
+> [`research/SPREAD_STUDY.md`](research/SPREAD_STUDY.md).
+>
+> Earlier Phase 0 finding: **Detector 1 (single-market complementary) is
+> structurally impossible.** Kalshi runs one book per market, so
+> `ask(YES) + ask(NO) < 100c` is the same condition as
+> `bid(YES) + bid(NO) > 100c`, which the matching engine crosses. Detectors 2–5
+> compare distinct markets and are unaffected.
 
 | 1 — Read-only data pipeline | Not started |
 | 2 — Detectors (observe only) | Not started |

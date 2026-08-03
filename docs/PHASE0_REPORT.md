@@ -13,9 +13,23 @@ ask(YES) + ask(NO) = (100 - bid_NO) + (100 - bid_YES) = 200 - (bid_YES + bid_NO)
 
 `ask(YES) + ask(NO) < 100c` therefore requires `bid_YES + bid_NO > 100c`, which
 is exactly the condition under which the matching engine crosses those two
-resting orders and trades them. The complementary arb cannot exist in a
-non-crossed book. It is not gated by fees — it is a state the exchange does not
-permit to persist.
+resting orders and trades them.
+
+**Stated precisely: a crossed book cannot _persist_, not that it never exists.**
+A crossed state is reachable in principle — between the arrival of an order and
+the engine matching it, the book is momentarily crossed. The defensible claim is
+about lifetime, not existence: that window is bounded by the matching engine's
+internal latency, which is orders of magnitude below any latency we can achieve
+from outside the exchange. We cannot observe it, and could not act inside it if
+we did.
+
+**This is the general form of every latency argument in this project**, and it
+is stated once here so later phases can reference it rather than re-derive it:
+an opportunity is only ours if its lifetime exceeds our quote→decision→order
+round trip. Where a mechanism inside the exchange closes a gap, that lifetime is
+the exchange's own processing time and the answer is always no. Where the gap is
+closed by other participants, the lifetime is an empirical question — which is
+what the Phase 2 gate measures.
 
 Measured across 190 two-sided books (crypto, NFL, MLB, WNBA, Fed, CPI, weather),
 2026-08-02:

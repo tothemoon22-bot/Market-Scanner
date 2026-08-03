@@ -31,10 +31,11 @@ one on paper.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from decimal import ROUND_CEILING, Decimal
-from enum import Enum
-from typing import Any, Iterable, Mapping
+from enum import StrEnum
+from typing import Any
 
 __all__ = [
     "FeeType",
@@ -67,7 +68,7 @@ FLAT_COEFFICIENT = Decimal("0.035")
 ONE_CENT = Decimal("0.01")
 
 
-class FeeType(str, Enum):
+class FeeType(StrEnum):
     """Mirrors the ``FeeType`` enum in Kalshi's OpenAPI spec.
 
     A series object carries this on the ``fee_type`` field. It is the only
@@ -80,7 +81,7 @@ class FeeType(str, Enum):
     FLAT = "flat"
 
 
-class Role(str, Enum):
+class Role(StrEnum):
     """Which side of the match we were on. Determines the coefficient."""
 
     TAKER = "taker"
@@ -113,7 +114,7 @@ class FeeModel:
     fee_multiplier: Decimal = Decimal(1)
 
     @classmethod
-    def from_series(cls, series: Mapping[str, Any]) -> "FeeModel":
+    def from_series(cls, series: Mapping[str, Any]) -> FeeModel:
         """Build from a Kalshi series object (or the ``series`` sub-object)."""
         body = series.get("series", series)
         try:
