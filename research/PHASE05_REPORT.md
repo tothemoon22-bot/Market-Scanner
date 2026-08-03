@@ -103,9 +103,24 @@ mode, and it should not be slid into under the name "no-arbitrage scanner".*
 ### Caveat
 
 The stability check ran 4 minutes apart, not 6 hours. 93% of books were
-unchanged, which at that interval is close to uninformative. **A 6-hour sweep is
-scheduled and outstanding.** It cannot change the required-mispricing tables,
-which depend on the level of the spread rather than its persistence.
+unchanged, which at that interval is close to uninformative.
+
+**The 6-hour sweep is outstanding and not scheduled.** I tried to schedule a
+self-wakeup for it; the tool needs an approval this non-interactive session
+cannot obtain. It has to be run by hand, and the recipe is:
+
+```bash
+python -m src.research.spread_sweep --label t2
+python -m src.research.spread_study \
+    --sweep research/snapshots/20260803T070632Z_t0 --compare data/sweeps/<t2 dir>
+python -m src.research.cross_market_check --sweep data/sweeps/<t2 dir>
+```
+
+The t0 and t1 snapshots are committed under `research/snapshots/`, so the
+comparison works from a fresh container. This cannot change the
+required-mispricing tables, which depend on the level of the spread rather than
+its persistence — it tests whether the 6c median is a stable property of the
+exchange or an artifact of one moment.
 
 ---
 
@@ -278,7 +293,8 @@ The version of Phase 1 worth running is narrower and sharper:
    where we expect edge makes the feasibility report unable to distinguish
    "edge lives here" from "we only looked here". Keep the control group.
 3. **Add the 6-hour and multi-day spread sweep** as a standing job. Spread level
-   is the governing parameter and one snapshot is not a distribution.
+   is the governing parameter and one snapshot is not a distribution. This is
+   also the outstanding piece of 0.5a — see the caveat above for how to run it.
 
 And one thing worth deciding before any of it: if the answer is "the only viable
 structure is resting orders on maker-free series", that is a market-making
