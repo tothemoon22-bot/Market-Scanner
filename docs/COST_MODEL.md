@@ -58,11 +58,22 @@ The size we can actually trade under the Phase 4 risk defaults is 10 contracts.
 At our size the effective rate is 1.4c–1.8c per contract per leg. Detectors must
 compute the fee at the size actually available, never at the asymptotic rate.
 
-## Detector 1 (complementary pair) break-even
+## Two-leg complementary break-even — cross-market pairs only
 
-Buy YES at `a` and NO at `1-a`, both crossing the spread, hold to settlement.
+> **Detector 1 as specified does not exist.** The YES/NO sides of a single
+> Kalshi market share one matching engine, and `ask(YES) + ask(NO) < 100c` is
+> algebraically equivalent to `bid(YES) + bid(NO) > 100c` — the condition under
+> which the engine crosses those two orders and trades them. It cannot be
+> observed in a non-crossed book at any fee level. See
+> [`venues/kalshi/README.md`](venues/kalshi/README.md#the-complementary-arb-is-structurally-impossible-within-a-market).
+>
+> The table below therefore applies **only to two legs in two distinct markets**,
+> which is the N=2 case of the event basket and carries the same mandatory
+> exhaustiveness requirement.
 
-| YES ask | NO ask | Fee (100 lots) | Fee c/contract | Max payable sum | Ticks of edge needed |
+Buy leg A at `a` and leg B at `1-a`, both crossing the spread, hold to settlement.
+
+| Leg A ask | Leg B ask | Fee (100 lots) | Fee c/contract | Max payable sum | Ticks of edge needed |
 | --- | --- | --- | --- | --- | --- |
 | 5c | 95c | $0.68 | 0.68c | 99.32c | 1 |
 | 10c | 90c | $1.26 | 1.26c | 98.74c | 2 |
@@ -76,7 +87,7 @@ Near the middle of the range that is four ticks. **The fee gate is strictly
 easier to clear at extreme prices** — 1 tick at 5c/95c against 4 ticks at
 50c/50c. If a complementary edge exists anywhere, it is in the tails.
 
-## Detector 2 (event basket) break-even
+## N-leg event basket break-even
 
 Uniform basket, one leg per outcome, 100 lots each, all legs crossing.
 
@@ -114,8 +125,8 @@ uncovered directional bet, which Phase 4 explicitly forbids. Any future
 
 | Parameter | Value | Derivation |
 | --- | --- | --- |
-| `fee_gate.complementary_min_edge_cents` | fee at actual size, per leg, summed | Detector 1 table |
-| `fee_gate.basket_min_edge_cents` | per-leg ceiling summed at actual size | Detector 2 table |
+| `fee_gate.two_leg_min_edge_cents` | fee at actual size, per leg, summed | two-leg table |
+| `fee_gate.basket_min_edge_cents` | per-leg ceiling summed at actual size | N-leg table |
 | `fee_gate.min_ticks_visible` | 1 at the tails, 4 mid-range | 1c tick vs fee/contract |
 | `sizing.min_size_for_rate` | quote fees at available size, not asymptotic | size table |
 

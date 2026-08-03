@@ -2,6 +2,59 @@
 
 Date: 2026-08-02. Awaiting approval before any detector is written.
 
+## 0. Detector 1 is structurally impossible and should not be built
+
+Kalshi runs **one** book per market. YES and NO are two quotations of the same
+instrument, so:
+
+```
+ask(YES) + ask(NO) = (100 - bid_NO) + (100 - bid_YES) = 200 - (bid_YES + bid_NO)
+```
+
+`ask(YES) + ask(NO) < 100c` therefore requires `bid_YES + bid_NO > 100c`, which
+is exactly the condition under which the matching engine crosses those two
+resting orders and trades them. The complementary arb cannot exist in a
+non-crossed book. It is not gated by fees — it is a state the exchange does not
+permit to persist.
+
+Measured across 190 two-sided books (crypto, NFL, MLB, WNBA, Fed, CPI, weather),
+2026-08-02:
+
+| Quantity | min | max |
+| --- | --- | --- |
+| `bid_YES + bid_NO` | 41c | **99c** |
+| `ask(YES) + ask(NO)` | **101c** | 159c |
+
+Zero crossed books. The tightest sat one full tick on the wrong side of the
+boundary before any fee.
+
+**What survives.** The other four detectors compare *distinct markets with
+distinct books*, and no engine matches between them; nothing structural
+prevents those violations. The salvageable content of Detector 1 is the
+cross-market complementary pair — two separate markets that partition an
+event — which is simply the N=2 case of Detector 2 and inherits its mandatory
+exhaustiveness check. The spec waived that check for Detector 1 on the grounds
+that "the pair settles to $1 regardless of outcome"; that is true only of one
+market's own YES/NO, i.e. exactly the case that turns out to be impossible.
+**Anyone who "fixes" Detector 1 by pointing it at two markets without routing it
+through the exhaustiveness gate has built an uncovered-short generator.**
+
+**Repurpose, don't delete, the computation.** In a correctly reconstructed book
+`bid_YES + bid_NO > 100c` cannot happen. If we observe it, our book is wrong —
+dropped `orderbook_delta` sequence, stale snapshot, or two sides read at
+different times. That makes it a free continuous correctness check on the
+ingest pipeline. It belongs in the Phase 1 gap report as an invariant
+violation, not in the detector suite as an opportunity.
+
+**Where else this trap could bite:** multivariate event collections are
+combinatorial markets built from other markets. Before building against them,
+check whether the engine links a collection's book to its components. If it
+does, the same reasoning applies.
+
+Credit where due — I flagged the ask-derivation as an implementation hazard and
+stopped there. The structural consequence is the more important half and I
+missed it.
+
 ## 1. The fee question, resolved
 
 **Your 7% source is right. The 0% source is wrong as stated, but it is pointing
@@ -51,7 +104,8 @@ assumed part, and I am keeping them separate.
 
 **Measured, from the fee model.** The tick is 1c, so what matters is how many
 whole ticks of visible mispricing the fee eats before we break even. For a
-complementary YES/NO pair bought at the ask and held to settlement:
+two-leg complementary pair bought at the ask and held to settlement — now
+strictly a *cross-market* structure, per section 0:
 
 | Price split | Fee per contract | Ticks of edge needed |
 | --- | --- | --- |
@@ -92,9 +146,15 @@ Things I did not go looking for that matter more than the fee answer:
   credentials on disk. That is a stronger version of hard constraint 2 than the
   spec asks for and I intend to hold to it.
 - **The orderbook has no ask side.** Kalshi returns resting bids for YES and NO
-  only; `ask(YES) = 1 - best_bid(NO)`. Detector 1 written naively against the
-  raw book fires on every market on the exchange. Verified empirically against
-  top-of-book fields; details in `docs/venues/kalshi/README.md`.
+  only; `ask(YES) = 1 - best_bid(NO)`. Verified empirically against top-of-book
+  fields. This is what section 0 is built on.
+- **`mutually_exclusive` is a venue claim, not exhaustiveness.** Events carry
+  the flag; it asserts at most one leg resolves YES and says nothing about
+  whether at least one does. Live example in `docs/venues/kalshi/README.md`:
+  `KXDEELRIP-40` ("Will Deel or Rippling IPO first?") is flagged mutually
+  exclusive, and if neither company IPOs by 2040 **both legs resolve NO and a
+  holder of both loses everything**. It is one API field away from being
+  auto-approved by mistake. Keep it out of the Phase 2 approval flow entirely.
 - **There is no native all-or-none multi-leg order.** Batched order submission
   is not atomic and order groups manage limits, not joint execution. The Phase 4
   requirement that baskets be all-or-none has to be built by us out of
@@ -137,9 +197,15 @@ empty by construction.
 
 ## 5. Gate
 
-Approval needed to start Phase 1. Two decisions worth making now rather than
+Approval needed to start Phase 1. Three decisions worth making now rather than
 later:
 
+0. **Detector 1.** My recommendation: delete it as specified, keep its
+   arithmetic as a Phase 1 book-integrity invariant, and let the cross-market
+   complementary pair live inside Detector 2 as the N=2 case — under the
+   exhaustiveness gate, with no waiver. The alternative, keeping a separate
+   two-leg detector, buys nothing and reintroduces the waiver that made the
+   original spec unsafe for cross-market pairs.
 1. **Scope of capture.** The fee math says the edge, if any, is at extreme
    prices and in few-leg structures. Capturing every market in every tracked
    series is the spec as written; capturing the tails deeply and the middle

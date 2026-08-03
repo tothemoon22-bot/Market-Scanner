@@ -78,10 +78,52 @@ ask(NO)  = 1 - best_bid(YES)
 
 Verified against the same market's top-of-book fields: best NO bid 0.9900 x
 12744 corresponded exactly to `yes_ask_dollars: "0.0100"`,
-`yes_ask_size_fp: "12744.00"`. **Detector 1 (`ask(YES) + ask(NO) < 100c`) is
-therefore arithmetically equivalent to `bid(YES) + bid(NO) > 100c` on the raw
-book** — get this transformation wrong and the detector fires on every market
-in the exchange.
+`yes_ask_size_fp: "12744.00"`.
+
+### The complementary arb is structurally impossible within a market
+
+There is **one** book per market, not two. YES and NO are two ways of quoting
+the same instrument, and a YES bid at `p` is the same resting interest as a NO
+offer at `100 - p`. Substituting the derived asks:
+
+```
+ask(YES) + ask(NO) = (100 - bid_NO) + (100 - bid_YES) = 200 - (bid_YES + bid_NO)
+```
+
+so `ask(YES) + ask(NO) < 100c` requires `bid_YES + bid_NO > 100c` — which is
+precisely the condition under which the matching engine crosses those two
+resting orders and trades them. **A non-crossed book cannot exhibit it.** This
+is not a threshold that fees make hard to clear; it is a state the exchange
+does not permit to persist.
+
+Measured 2026-08-02 across 190 two-sided books sampled from crypto, NFL, MLB,
+WNBA, Fed, CPI and weather series:
+
+| Quantity | min | max |
+| --- | --- | --- |
+| `bid_YES + bid_NO` | 41c | **99c** |
+| `ask(YES) + ask(NO)` | **101c** | 159c |
+
+Zero crossed books. The tightest book on the exchange sat one full tick on the
+wrong side of the boundary, before any fee is applied.
+
+Two consequences:
+
+1. **The single-market complementary detector should not be built.** Buying
+   both sides of one market is not a hedge, it is a round trip through the
+   spread that pays fees twice.
+2. **The computation is still worth running, with its meaning inverted.** In a
+   correctly reconstructed book, `bid_YES + bid_NO > 100c` is impossible.
+   Observing it therefore indicates *our* book is wrong — a dropped
+   `orderbook_delta` sequence, a stale snapshot, or two sides read from
+   different points in time. It is a free, continuous correctness check on the
+   ingest pipeline and belongs in the Phase 1 gap report as an invariant
+   violation, not in the detector suite as an opportunity.
+
+The cross-market case is different and survives: two *distinct* markets have
+two distinct books and no engine matches between them. That is the N=2 instance
+of the event-basket detector, and it inherits the mandatory exhaustiveness
+check — see below.
 
 ### Fixed-point fields
 
@@ -163,7 +205,32 @@ exhaustiveness check must hash), `price_level_structure` (`linear_cent`) and
 Multivariate event collections (`/multivariate_event_collections`) are
 combinatorial markets built from other markets. They are a plausible source of
 genuine internal inconsistency and are **out of scope for Phase 1**; note them
-and move on.
+and move on. Check before building against them whether the engine links a
+collection's book to its component markets — if it does, the same
+"the exchange already arbs this" trap that killed the single-market
+complementary detector applies there too.
+
+### `mutually_exclusive` is a venue claim, and it is not exhaustiveness
+
+Event objects carry a `mutually_exclusive` boolean. **Do not feed it to the
+Phase 2 approval flow.** It asserts that at most one leg resolves YES. It says
+nothing about whether at least one does, and the gap between those two is where
+the money is lost.
+
+Worked example, live on 2026-08-02 — `KXDEELRIP-40`, "Will Deel or Rippling IPO
+first?", `mutually_exclusive: true`, two separate markets:
+
+| Market | Ask | Resolution criteria |
+| --- | --- | --- |
+| `KXDEELRIP-40-DEEL` | 57c | "If Deel confirms an IPO first, before Jan 1, 2040, then the market resolves to Yes." |
+| `KXDEELRIP-40-RIPP` | 44c | "If Rippling confirms an IPO first, before Jan 1, 2040, then the market resolves to Yes." |
+
+If neither company IPOs by 2040, **both legs resolve NO and a holder of both
+loses the entire stake**. The basket is mutually exclusive and not exhaustive.
+Were the asks to sum to 96c, a structural detector would call it a 4c arbitrage;
+it is an uncovered short of the "neither" outcome. This is the failure mode the
+mandatory exhaustiveness check exists to catch, and it is one API field away
+from being auto-approved by mistake.
 
 ## Settlement
 

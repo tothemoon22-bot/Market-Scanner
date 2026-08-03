@@ -19,6 +19,15 @@ are reference data only and are never traded.
 | Phase | State |
 | --- | --- |
 | 0 — Research | **Complete, awaiting gate approval.** See [`docs/PHASE0_REPORT.md`](docs/PHASE0_REPORT.md) |
+
+> Phase 0 finding that changes the Phase 2 scope: **Detector 1 (single-market
+> complementary) is structurally impossible, not merely unprofitable.** Kalshi
+> runs one book per market, so `ask(YES) + ask(NO) < 100c` is the same condition
+> as `bid(YES) + bid(NO) > 100c`, which the matching engine crosses on sight.
+> Confirmed against 190 live books. Detectors 2–5 compare distinct markets with
+> distinct books and are unaffected. Detail in
+> [`docs/PHASE0_REPORT.md`](docs/PHASE0_REPORT.md) section 0.
+
 | 1 — Read-only data pipeline | Not started |
 | 2 — Detectors (observe only) | Not started |
 | 3 — Dashboard | Not started |

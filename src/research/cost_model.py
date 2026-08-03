@@ -73,16 +73,22 @@ def size_sensitivity_table() -> str:
 
 
 def complementary_threshold_table() -> str:
-    """Detector 1 break-even: how far below 100c the two asks must sum.
+    """Two-leg complementary break-even --- CROSS-MARKET pairs only.
 
-    Buy YES at `a` and NO at `1-a`, hold to settlement. Both legs cross the
+    Buy leg A at `a` and leg B at `1-a`, hold to settlement. Both legs cross the
     spread, so both pay taker fees; settlement is free.
+
+    This does NOT apply to the YES/NO sides of a single market. Those share one
+    matching engine and the arb is structurally impossible there; see
+    docs/COST_MODEL.md. The surviving case is two distinct markets, which is the
+    N=2 instance of the event-basket detector and is subject to the same
+    mandatory exhaustiveness check.
     """
     lines = [
         _row(
             [
-                "YES ask",
-                "NO ask",
+                "Leg A ask",
+                "Leg B ask",
                 "Fee (100 lots)",
                 "Fee c/contract",
                 "Max payable sum",
@@ -171,9 +177,9 @@ def main() -> None:
     print(headline_table())
     print("\n## Per-contract cost by order size (taker)\n")
     print(size_sensitivity_table())
-    print("\n## Detector 1 break-even\n")
+    print("\n## Two-leg complementary break-even (cross-market only)\n")
     print(complementary_threshold_table())
-    print("\n## Detector 2 break-even\n")
+    print("\n## N-leg event basket break-even\n")
     print(basket_threshold_table())
     print("\n## Maker vs taker\n")
     print(maker_table())
