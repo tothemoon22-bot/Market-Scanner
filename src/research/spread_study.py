@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import json
 import statistics
 from collections import defaultdict
@@ -34,13 +35,35 @@ BASKET_SHAPES = [(2, D("0.50"), "25-75c"), (3, D("0.33"), "25-75c"),
                  (4, D("0.25"), "25-75c"), (10, D("0.10"), "8-25c")]
 
 
+def _open_csv(sweep: Path, name: str):
+    """Open a sweep CSV, gzipped or not.
+
+    Live sweeps under data/ are plain; the snapshot committed alongside a
+    published report is gzipped so the report stays auditable after the
+    working data is gone.
+    """
+    plain = sweep / f"{name}.csv"
+    if plain.exists():
+        return plain.open()
+    packed = sweep / f"{name}.csv.gz"
+    if packed.exists():
+        return gzip.open(packed, "rt")
+    return None
+
+
 def load(sweep: Path) -> tuple[list[dict], dict[str, dict]]:
-    markets = list(csv.DictReader((sweep / "markets.csv").open()))
+    handle = _open_csv(sweep, "markets")
+    if handle is None:
+        raise FileNotFoundError(f"no markets.csv or markets.csv.gz in {sweep}")
+    with handle:
+        markets = list(csv.DictReader(handle))
+
     events: dict[str, dict] = {}
-    events_path = sweep / "events.csv"
-    if events_path.exists():
-        for row in csv.DictReader(events_path.open()):
-            events[row["event_ticker"]] = row
+    handle = _open_csv(sweep, "events")
+    if handle is not None:
+        with handle:
+            for row in csv.DictReader(handle):
+                events[row["event_ticker"]] = row
     return markets, events
 
 
@@ -309,7 +332,16 @@ tables, which depend on the level of the spread rather than its persistence.
     return f"""# Phase 0.5a — Spread Study
 
 Source sweep: `{sweep.name}`. Read-only, public endpoints, no credentials.
-Regenerate with `python -m src.research.spread_study`.
+
+The derived data backing every number here is committed under
+`research/snapshots/`, so this report stays auditable after the working data is
+gone. Reproduce it exactly with::
+
+    python -m src.research.spread_study \\
+        --sweep research/snapshots/{sweep.name} \\
+        --compare research/snapshots/<second sweep>
+
+Take a fresh sweep with `python -m src.research.spread_sweep --label <tag>`.
 
 **`100 - (bid_YES + bid_NO)` is the YES bid-ask spread.** It is the same
 expression the deleted complementary detector was testing, and it governs

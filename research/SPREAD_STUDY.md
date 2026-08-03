@@ -1,7 +1,16 @@
 # Phase 0.5a — Spread Study
 
 Source sweep: `20260803T070632Z_t0`. Read-only, public endpoints, no credentials.
-Regenerate with `python -m src.research.spread_study`.
+
+The derived data backing every number here is committed under
+`research/snapshots/`, so this report stays auditable after the working data is
+gone. Reproduce it exactly with::
+
+    python -m src.research.spread_study \
+        --sweep research/snapshots/20260803T070632Z_t0 \
+        --compare research/snapshots/<second sweep>
+
+Take a fresh sweep with `python -m src.research.spread_sweep --label <tag>`.
 
 **`100 - (bid_YES + bid_NO)` is the YES bid-ask spread.** It is the same
 expression the deleted complementary detector was testing, and it governs

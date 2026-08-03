@@ -1,0 +1,14 @@
+{
+  "captured_at": "2026-08-03T07:06:32.416783+00:00",
+  "label": "t0",
+  "base_url": "https://api.elections.kalshi.com/trade-api/v2",
+  "n_series": 11928,
+  "n_events": 8747,
+  "n_markets": 70820,
+  "n_two_sided": 44453,
+  "series_resolved": 11928,
+  "unmapped_series": [
+    "KXMLBWINS",
+    "KXNEWOUTBREAK"
+  ]
+}
