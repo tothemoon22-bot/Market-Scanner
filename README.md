@@ -16,25 +16,27 @@ are reference data only and are never traded.
 
 ## Status
 
+> # CLOSED — no exploitable edge found
+>
+> **Read [`docs/NEGATIVE_RESULT.md`](docs/NEGATIVE_RESULT.md) first.** It is
+> written to be read without this repository.
+>
+> The cleanest single result: 61 markets exist where both obstacles vanish at
+> once — a 0.1c tick instead of 1c, and a fee of exactly zero. The three
+> verified-exhaustive partitions among them price at 105.2c, 107.8c and 100.3c.
+> Every one costs more than the dollar it is guaranteed to pay. The thesis fails
+> even where all known obstacles are removed.
+>
+> Phases 1–5 were never built. A standing monitor in [`monitor/`](monitor/)
+> watches for the conditions that would change the conclusion. **An alert is a
+> prompt to re-read the memo, not to trade.**
+
 | Phase | State |
 | --- | --- |
 | 0 — Research | Complete. [`docs/PHASE0_REPORT.md`](docs/PHASE0_REPORT.md) |
-| 0.5 — Kill-shot experiments | **Complete, awaiting gate approval.** [`research/PHASE05_REPORT.md`](research/PHASE05_REPORT.md) |
-
-> **Phase 0.5a returned NO-GO for taker-side detection.** Median spread across
-> 44,453 two-sided Kalshi books is 6c, so a 4-leg basket needs a 19c mispricing
-> before it is visible — the spread term dominates the fee term at every leg
-> count. Measured directly: the median mutually-exclusive basket costs +4c over
-> par. The exception is roughly 200 markets in fee-free and maker-fee series,
-> quoted six times tighter. Detail in
-> [`research/PHASE05_REPORT.md`](research/PHASE05_REPORT.md) and
-> [`research/SPREAD_STUDY.md`](research/SPREAD_STUDY.md).
->
-> Earlier Phase 0 finding: **Detector 1 (single-market complementary) is
-> structurally impossible.** Kalshi runs one book per market, so
-> `ask(YES) + ask(NO) < 100c` is the same condition as
-> `bid(YES) + bid(NO) > 100c`, which the matching engine crosses. Detectors 2–5
-> compare distinct markets and are unaffected.
+| 0.5 — Kill-shot experiments | Complete. [`research/PHASE05_REPORT.md`](research/PHASE05_REPORT.md) |
+| Closing query | Complete. Fee-free universe re-tested with the fee gate removed |
+| 1–5 | **Not built. Closed before capture began.** |
 
 | 1 — Read-only data pipeline | Not started |
 | 2 — Detectors (observe only) | Not started |
@@ -47,43 +49,57 @@ not build ahead.
 
 ## Hard constraints
 
-1. Phases 0–3 are read-only. **No order-placing code exists in this repo until
-   Phase 4** — `src/execution/` is empty by construction.
-2. Phase 4 places orders against the Kalshi **demo environment only**.
-   Production credentials must not be loadable by the application; a startup
-   assertion enforces it.
-3. No strategy acts on a "riskless" basket without passing the Phase 2
-   exhaustiveness check. Exhaustiveness is never inferred from series structure
-   or title.
-4. Secrets live in `.env` (gitignored) or the OS keychain. Never in logs or
-   error messages. `tools/secret_scan.py` runs pre-commit.
-5. Every order carries an idempotent client order ID.
+These held throughout and still hold. **No order-placing code was ever written**
+— `src/execution/` is empty by construction and `monitor/` is grep-tested to
+stay that way. Nothing in this repository has ever authenticated to Kalshi or
+held a credential; every measurement here came from public endpoints.
+
+1. Read-only. No order-placing code, no credentials, no authenticated calls.
+2. No strategy acts on a "riskless" basket without a verified partition.
+   Exhaustiveness is never inferred from series structure, title, or the venue's
+   `mutually_exclusive` flag.
+3. Secrets would live in `.env` (gitignored) or the OS keychain. None were ever
+   needed. `tools/secret_scan.py` runs pre-commit regardless.
 
 ## Start here
 
-- [`docs/PHASE0_REPORT.md`](docs/PHASE0_REPORT.md) — the fee finding and what it
-  does to the opportunity set
-- [`docs/COST_MODEL.md`](docs/COST_MODEL.md) — every detector threshold derives
-  from this file
-- [`docs/venues/kalshi/fees.md`](docs/venues/kalshi/fees.md) — evidence trail
+- [`docs/NEGATIVE_RESULT.md`](docs/NEGATIVE_RESULT.md) — **the finding.** Read
+  without the repo; everything else is supporting evidence
+- [`monitor/README.md`](monitor/README.md) — the standing monitor and what would
+  reopen the question
+
+Supporting evidence, in the order it was produced:
+
+- [`docs/PHASE0_REPORT.md`](docs/PHASE0_REPORT.md) — the fee finding, and
+  Detector 1's structural impossibility
+- [`docs/COST_MODEL.md`](docs/COST_MODEL.md) — fee thresholds, generated from
+  the fee model
+- [`research/SPREAD_STUDY.md`](research/SPREAD_STUDY.md) — the exchange-wide
+  spread distribution that turned out to be the binding constraint
+- [`research/PHASE05_REPORT.md`](research/PHASE05_REPORT.md) — the five
+  kill-shot experiments
+- [`docs/venues/kalshi/fees.md`](docs/venues/kalshi/fees.md) — fee evidence trail
 - [`docs/venues/kalshi/README.md`](docs/venues/kalshi/README.md) — API notes
 
 ## Layout
 
 ```
+docs/NEGATIVE_RESULT.md   the finding
+monitor/                  standing monitor: baseline, checks, alerts, snapshots
+research/                 spread study, Phase 0.5 report, sweep snapshots
 src/
-  venues/kalshi/      REST + WS client, fee model, taxonomy
-  venues/reference/   binance.py, coinbase.py — public data only
-  detectors/          no-arb violation checks
-  research/           analysis + report generation
-  execution/          EMPTY until Phase 4
-  risk/
-  dashboard/
-  storage/
-docs/venues/          venue research, vendored API specs and regulatory filings
-tests/
-tools/                secret scanner
+  venues/kalshi/fees.py   the fee model — Decimal only, floats raise
+  research/               the sweeps and analyses the reports are generated from
+  detectors/              EMPTY — never built
+  execution/              EMPTY — never built, by construction
+  risk/ dashboard/ storage/   EMPTY — never built
+docs/venues/              venue research, vendored API specs and CFTC filings
+tests/                    fee model, plus the Phase 0.5 false positives as fixtures
+tools/                    secret scanner
 ```
+
+The empty directories are deliberate and are left in place: a reviewer can
+verify the read-only constraint by looking at them.
 
 ## Setup
 
@@ -94,31 +110,26 @@ python3 -m venv .venv
 .venv/bin/python -m pytest
 ```
 
-No credentials are required for Phases 0–3: Kalshi's public market data is
-unauthenticated, and the reference feeds are public.
+No credentials are required, then or now. Kalshi's public market data is
+unauthenticated.
 
-## Regenerating the cost model
+## Regenerating the reports
 
 ```bash
-.venv/bin/python -m src.research.cost_model
+.venv/bin/python -m src.research.cost_model        # docs/COST_MODEL.md tables
+.venv/bin/python -m src.research.spread_study      # research/SPREAD_STUDY.md
+.venv/bin/python -m src.research.fee_free_check    # the closing query
+.venv/bin/python -m monitor.run --from monitor/snapshots/20260803T070632Z_t0
 ```
 
-`docs/COST_MODEL.md` is derived from `src/venues/kalshi/fees.py`. Change the fee
-model, re-run, paste. Never hand-edit the tables.
+Every table in the documentation is generated, not hand-typed. Change the model,
+re-run, paste.
 
-## LLM usage policy
+## A note on continuation
 
-The language model builds and researches. It does not make per-tick decisions.
-Detectors are deterministic arithmetic — a fee comparison or a monotonicity
-check is never routed through an LLM. Legitimate uses: parsing and comparing
-resolution-criteria text, flagging ambiguity for human review, generating
-research reports. Token spend is logged per component and surfaced next to paper
-P&L.
-
-## What this project does not do
-
-- Any strategy that requires predicting an outcome
-- Martingale, averaging down, or size that increases after a loss
-- Auto-approval of event series as exhaustive
-- Trading Detector 6 divergence as if it were arbitrage
-- Parameter tuning to make the feasibility report look better
+Resting orders are free on 98.7% of Kalshi series and the tightest segments
+quote at a 1¢ median. That is **not** a market-making opportunity this project
+discovered — it is a different thesis with a different risk model, and the
+observed tightness is evidence against it rather than for it. See the final
+section of [`docs/NEGATIVE_RESULT.md`](docs/NEGATIVE_RESULT.md). The
+infrastructure here justifies nothing.
