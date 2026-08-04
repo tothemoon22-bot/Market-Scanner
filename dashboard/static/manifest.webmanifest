@@ -1,0 +1,14 @@
+{
+  "name": "Kalshi scanner",
+  "short_name": "Scanner",
+  "description": "Read-only falsification surface for the Kalshi no-arbitrage study",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f2efe4",
+  "theme_color": "#1b1a16",
+  "icons": [
+    { "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

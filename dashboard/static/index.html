@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1b1a16">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<title>Kalshi scanner</title>
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icon.svg">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<div class="strip" id="strip" aria-label="live status"></div>
+<div id="banners"></div>
+
+<main>
+
+  <section class="hero" id="hero" aria-label="falsification surface">
+    <div class="headline">
+      <div class="big" id="hero-count"></div>
+      <div class="sub" id="hero-sub"></div>
+    </div>
+    <div class="row">
+      <span class="label">Closest trigger</span>
+      <div id="hero-closest"></div>
+    </div>
+    <div class="row">
+      <span class="label">Proximity watch</span>
+      <div id="hero-watch"></div>
+    </div>
+  </section>
+
+  <section class="panel wide" aria-label="rejection funnel">
+    <h2>Rejection funnel <span class="meta" id="funnel-meta"></span></h2>
+    <div class="body" id="funnel"></div>
+  </section>
+
+  <section class="panel wide" aria-label="trigger board">
+    <h2>Trigger board <span class="meta">7 conditions</span></h2>
+    <div class="body" id="triggers"></div>
+  </section>
+
+  <section class="panel wide" aria-label="tripwire">
+    <h2>Tripwire — deci-cent ∩ fee-free <span class="meta" id="tripwire-meta"></span></h2>
+    <div class="body" id="tripwire"></div>
+  </section>
+
+  <section class="panel wide" aria-label="spread distribution">
+    <h2>Spread distribution <span class="meta" id="spread-meta"></span></h2>
+    <div class="body">
+      <div class="seg" id="spread-seg" role="group" aria-label="segment"></div>
+      <div id="spread"></div>
+    </div>
+  </section>
+
+  <section class="panel" aria-label="tick structure">
+    <h2>Tick structure</h2>
+    <div class="body" id="ticks"></div>
+  </section>
+
+  <section class="panel" aria-label="verified partitions">
+    <h2>Verified partitions <span class="meta" id="partitions-meta"></span></h2>
+    <div class="body" id="partitions"></div>
+  </section>
+
+  <section class="panel" aria-label="pipeline health">
+    <h2>Pipeline health</h2>
+    <div class="body" id="health"></div>
+  </section>
+
+  <section class="panel" aria-label="reference spot">
+    <h2>Reference spot <span class="meta">not traded</span></h2>
+    <div class="body" id="reference"></div>
+  </section>
+
+  <section class="panel wide" aria-label="event log">
+    <h2>Event log <span class="meta" id="log-meta"></span></h2>
+    <div class="body log" id="log"></div>
+  </section>
+
+</main>
+
+<footer>
+  Read-only instrument. No credentials, no authenticated endpoints, no
+  order-placing code. Every number here is measured; anything unmeasured renders
+  <span class="nodata">no data</span>.<br>
+  The project is closed — see <b>docs/NEGATIVE_RESULT.md</b>. An alert is a
+  prompt to re-read the memo, not to trade.
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

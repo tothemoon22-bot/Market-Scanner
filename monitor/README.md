@@ -27,6 +27,15 @@ investigation:
 - **The size gate is `>= 1` contract everywhere.** Kalshi contracts trade down
   to 0.01, so a leg can display an offer worth nine hundredths of a cent.
 
+## Relationship to the live scanner
+
+`scanner/` and `dashboard/` render this same logic continuously — they import
+`monitor.checks`, `monitor.metrics` and `monitor.alerts` rather than
+reimplementing them, so there is one definition of a verified partition and one
+set of thresholds. This package remains the durable half: the weekly job writes
+the committed archive and never depends on the always-on box. See
+[`../docs/DEPLOY.md`](../docs/DEPLOY.md).
+
 ## Running it
 
 ```bash

@@ -28,8 +28,10 @@ are reference data only and are never traded.
 > even where all known obstacles are removed.
 >
 > Phases 1–5 were never built. A standing monitor in [`monitor/`](monitor/)
-> watches for the conditions that would change the conclusion. **An alert is a
-> prompt to re-read the memo, not to trade.**
+> watches for the conditions that would change the conclusion, and a continuous
+> scanner ([`scanner/`](scanner/)) with a phone dashboard
+> ([`dashboard/`](dashboard/)) renders that watch live. **An alert is a prompt to
+> re-read the memo, not to trade.**
 
 | Phase | State |
 | --- | --- |
@@ -37,15 +39,6 @@ are reference data only and are never traded.
 | 0.5 — Kill-shot experiments | Complete. [`research/PHASE05_REPORT.md`](research/PHASE05_REPORT.md) |
 | Closing query | Complete. Fee-free universe re-tested with the fee gate removed |
 | 1–5 | **Not built. Closed before capture began.** |
-
-| 1 — Read-only data pipeline | Not started |
-| 2 — Detectors (observe only) | Not started |
-| 3 — Dashboard | Not started |
-| 4 — Paper execution (demo only) | Not started |
-| 5 — Go / no-go review | Not started |
-
-Phases are worked in order and each stops at a gate for explicit approval. Do
-not build ahead.
 
 ## Hard constraints
 
@@ -85,6 +78,8 @@ Supporting evidence, in the order it was produced:
 
 ```
 docs/NEGATIVE_RESULT.md   the finding
+scanner/                  continuous read-only scanner: guard, triggers, funnel
+dashboard/                FastAPI + mobile PWA rendering the falsification surface
 monitor/                  standing monitor: baseline, checks, alerts, snapshots
 research/                 spread study, Phase 0.5 report, sweep snapshots
 src/
@@ -124,6 +119,24 @@ unauthenticated.
 
 Every table in the documentation is generated, not hand-typed. Change the model,
 re-run, paste.
+
+## Watching it
+
+```bash
+.venv/bin/python -m dashboard.app                      # live
+.venv/bin/python -m dashboard.app --snapshot monitor/snapshots/20260803T070632Z_t0
+```
+
+Mobile-first, installable as a PWA. The hero is not P&L — it is the
+falsification surface: actionable count, the trigger closest to firing, and how
+long the window of observation actually is. Deployment, cadences, and the two
+things it deliberately does not do are in [`docs/DEPLOY.md`](docs/DEPLOY.md).
+
+**No panel displays a number the system does not measure.** Anything unmeasured
+renders an explicit NO DATA state; `0 actionable` and `scanner offline` are
+visually unmistakable for one another. Tests enforce this mechanically —
+placeholder markers, stray numeric literals, credentials and order-placement
+references all fail the suite.
 
 ## A note on continuation
 

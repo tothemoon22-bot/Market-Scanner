@@ -1,0 +1,284 @@
+"""Continuous scanner. Three loops at three cadences, one shared state.
+
+    full sweep      every FULL_SWEEP_INTERVAL, ~75s of work, exchange-wide stats
+    tracked subset  every TRACKED_INTERVAL, the ~210 markets the findings rest on
+    reference spot  1 Hz, Binance mirror and Coinbase, reference only
+
+**Kalshi's WebSocket is not used, and cannot be.** The handshake requires
+authentication -- verified: `wss://external-api-ws.kalshi.com/trade-api/ws/v2`
+and the elections host both return HTTP 401 without credentials. The spec asked
+for live books over WS *and* for no authenticated endpoints; those cannot both
+hold. The no-credentials constraint wins, because it is the constraint the whole
+project has been built and grep-tested against. The tracked subset is polled
+over public REST instead, and the achieved interval is measured and reported
+rather than assumed.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import time
+from decimal import Decimal
+from typing import Any
+
+import httpx
+
+from monitor import alerts as alerts_mod
+from monitor import collect, metrics
+from monitor.checks import tradeable_size
+from scanner import funnel, reference, triggers
+from scanner.state import ScannerState, now
+
+D = Decimal
+
+FULL_SWEEP_INTERVAL = 900.0  # 15 min; a sweep is ~75s of paced requests
+TRACKED_INTERVAL = 15.0
+REFERENCE_INTERVAL = 1.0
+REQUEST_SPACING = 0.12
+
+
+async def _paced_get(
+    client: httpx.AsyncClient, url: str, params: dict | None = None, retries: int = 4
+) -> httpx.Response:
+    delay = 1.0
+    for attempt in range(retries):
+        resp = await client.get(url, params=params, timeout=45.0)
+        if resp.status_code == 429 or resp.status_code >= 500:
+            if attempt == retries - 1:
+                resp.raise_for_status()
+            await asyncio.sleep(delay)
+            delay *= 2
+            continue
+        resp.raise_for_status()
+        return resp
+    raise RuntimeError(f"retries exhausted for {url}")
+
+
+def tracked_series(state: ScannerState) -> list[str]:
+    """Fee-free series from the last sweep. Empty until the first sweep lands."""
+    if not state.metrics:
+        return []
+    return list(state.metrics.get("fee_free", {}).get("series", []))
+
+
+def _row_from_market(market: dict, series_meta: dict) -> dict[str, Any]:
+    return collect.to_row(market, series_meta).__dict__
+
+
+async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
+    source = state.source("kalshi_sweep")
+    last_started: float | None = None
+    while True:
+        started = time.monotonic()
+        if last_started is not None:
+            state.sweep_intervals.append(started - last_started)
+        last_started = started
+        try:
+            rows_typed, manifest = await asyncio.to_thread(collect.collect, collect_categories())
+            rows = [r.__dict__ for r in rows_typed]
+
+            computed = metrics.compute(rows)
+            try:
+                fee_changes = await asyncio.to_thread(_fee_changes)
+                computed["fee_changes"] = fee_changes
+            except Exception as exc:  # noqa: BLE001 - surfaced, not swallowed
+                state.source("kalshi_fee_changes").failed(f"{type(exc).__name__}: {exc}")
+
+            state.metrics = computed
+            state.metrics_at = now()
+            state.sweep_count += 1
+            state.sweep_seconds = time.monotonic() - started
+            state.triggers = [t.__dict__ for t in triggers.evaluate(baseline, computed)]
+            state.funnel = funnel.as_dict(funnel.build(rows))
+            state.partitions = computed["verified_partitions"]["fee_free_detail"]
+            state.tripwire = computed["deci_cent_fee_free_tripwire"]
+            _record_proximity(state)
+            state.ready = True
+            source.ok()
+
+            fired = alerts_mod.evaluate(baseline, computed)
+            state.log(
+                "sweep",
+                f"full sweep complete: {manifest['n_markets']:,} markets in "
+                f"{state.sweep_seconds:.0f}s",
+                markets=manifest["n_markets"],
+            )
+            for alert in fired:
+                state.log("alert", alert.trigger, baseline=alert.baseline, current=alert.current)
+        except Exception as exc:  # noqa: BLE001
+            source.failed(f"{type(exc).__name__}: {exc}")
+            state.log("error", f"full sweep failed: {type(exc).__name__}: {exc}")
+
+        state.beat()
+        await asyncio.sleep(max(0.0, FULL_SWEEP_INTERVAL - (time.monotonic() - started)))
+
+
+def _record_proximity(state: ScannerState) -> None:
+    """Track the peak trigger proximity, so the hero's claim is bounded by
+    the window actually observed rather than asserted about all time."""
+    measured = [
+        float(t["proximity_pct"]) for t in (state.triggers or []) if t["proximity_pct"] is not None
+    ]
+    if not measured:
+        return
+    peak = max(measured)
+    state.peak_proximity_pct = peak
+    if peak >= 20:
+        state.last_within_20_at = now()
+
+
+def collect_categories() -> list[str]:
+    from monitor.run import CATEGORIES
+
+    return CATEGORIES
+
+
+def _fee_changes() -> dict[str, Any]:
+    from monitor.run import fetch_fee_changes
+
+    changes = fetch_fee_changes()
+    return {"count": len(changes["series"]) + len(changes["events"]), **changes}
+
+
+async def tracked_loop(state: ScannerState) -> None:
+    """Poll the markets the findings actually rest on, far faster than the sweep."""
+    source = state.source("kalshi_tracked")
+    async with httpx.AsyncClient(headers={"Accept": "application/json"}) as client:
+        while True:
+            started = time.monotonic()
+            series = tracked_series(state)
+            if not series:
+                await asyncio.sleep(TRACKED_INTERVAL)
+                continue
+            try:
+                rows: list[dict[str, Any]] = []
+                meta = {
+                    s: {
+                        "category": "",
+                        "fee_type": "quadratic",
+                        "fee_multiplier": "0",
+                    }
+                    for s in series
+                }
+                for ticker in series:
+                    resp = await _paced_get(
+                        client,
+                        f"{collect.BASE}/markets",
+                        {"series_ticker": ticker, "status": "open", "limit": 1000},
+                    )
+                    for market in resp.json().get("markets") or []:
+                        rows.append(_row_from_market(market, meta))
+                    await asyncio.sleep(REQUEST_SPACING)
+
+                violations = _invariant_violations(rows)
+                if violations:
+                    state.invariant_violations += len(violations)
+                    state.invariant_last = violations[0]
+                    state.log(
+                        "invariant",
+                        f"{len(violations)} market(s) with bid_YES + bid_NO > 100c "
+                        "- our book is wrong, not the exchange's",
+                        example=violations[0],
+                    )
+
+                state.tracked = _tracked_view(rows)
+                state.tracked_at = now()
+                state.tracked_poll_seconds = time.monotonic() - started
+                source.ok()
+            except Exception as exc:  # noqa: BLE001
+                source.failed(f"{type(exc).__name__}: {exc}")
+                state.log("error", f"tracked poll failed: {type(exc).__name__}: {exc}")
+
+            state.beat()
+            await asyncio.sleep(max(0.0, TRACKED_INTERVAL - (time.monotonic() - started)))
+
+
+def _invariant_violations(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """bid_YES + bid_NO > 100 cannot happen in a correctly reconstructed book.
+
+    Observing it means our view is wrong -- a stale read or two sides captured
+    at different moments. It is a health signal, never a detector.
+    """
+    out = []
+    for row in rows:
+        total = D(row["bid_yes_cents"]) + D(row["bid_no_cents"])
+        if total > 100:
+            out.append(
+                {
+                    "ticker": row["ticker"],
+                    "bid_yes": row["bid_yes_cents"],
+                    "bid_no": row["bid_no_cents"],
+                    "sum": str(total),
+                    "at": now().isoformat(),
+                }
+            )
+    return out
+
+
+def _tracked_view(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Per-event live basket cost for the tracked subset."""
+    from monitor.checks import verify_partition
+    from monitor.metrics import _as_legs, _events
+
+    out = []
+    for event, legs in sorted(_events(rows).items()):
+        if len(legs) < 2:
+            continue
+        result = verify_partition(_as_legs(legs))
+        cost = sum(D(leg["ask_yes_cents"]) for leg in legs)
+        capacity = min(tradeable_size(leg["ask_size"]) for leg in legs)
+        out.append(
+            {
+                "event": event,
+                "legs": len(legs),
+                "verified": bool(result),
+                "verify_reason": result.reason,
+                "tick_structure": legs[0]["tick_structure"],
+                "cost_cents": str(cost.quantize(D("0.01"))),
+                "distance_from_par_cents": str((cost - 100).quantize(D("0.01"))),
+                "capacity_contracts": str(capacity),
+                "all_two_sided": all(leg["two_sided"] == "True" for leg in legs),
+            }
+        )
+    return out
+
+
+async def reference_loop(state: ScannerState) -> None:
+    async with httpx.AsyncClient() as client:
+        while True:
+            started = time.monotonic()
+            for name, fetch in (
+                ("binance_vision", reference.fetch_binance),
+                ("coinbase", reference.fetch_coinbase),
+            ):
+                source = state.source(name)
+                try:
+                    state.reference[name] = await fetch(client)
+                    source.ok()
+                except Exception as exc:  # noqa: BLE001
+                    source.failed(f"{type(exc).__name__}: {exc}")
+                    state.reference.pop(name, None)
+                    state.log(
+                        "error",
+                        f"{name} unavailable: {type(exc).__name__}. "
+                        "No failover - Binance.US is a different exchange.",
+                    )
+            state.beat()
+            await asyncio.sleep(max(0.0, REFERENCE_INTERVAL - (time.monotonic() - started)))
+
+
+async def run(state: ScannerState, baseline: dict) -> None:
+    state.log("start", "scanner starting; read-only, no credentials")
+    tasks = [
+        asyncio.create_task(full_sweep_loop(state, baseline)),
+        asyncio.create_task(tracked_loop(state)),
+        asyncio.create_task(reference_loop(state)),
+    ]
+    try:
+        await asyncio.gather(*tasks)
+    finally:
+        for task in tasks:
+            task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.gather(*tasks, return_exceptions=True)
