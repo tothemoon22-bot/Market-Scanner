@@ -43,6 +43,10 @@ PRICE_BUCKETS = [
 
 _last_request_at = 0.0
 
+#: Incremented on every 429. The engine reads and reports it as a health event;
+#: a rate-limited scanner that stays silent is a scanner that gets IP-blocked.
+rate_limit_hits = 0
+
 
 def price_bucket(mid_cents: D) -> str:
     for name, lo, hi in PRICE_BUCKETS:
@@ -85,6 +89,9 @@ def _get(client: httpx.Client, url: str, params: dict | None = None) -> httpx.Re
             time.sleep(MIN_REQUEST_INTERVAL - elapsed)
         _last_request_at = time.monotonic()
         resp = client.get(url, params=params)
+        if resp.status_code == 429:
+            global rate_limit_hits
+            rate_limit_hits += 1
         if resp.status_code == 429 or resp.status_code >= 500:
             if attempt == MAX_RETRIES - 1:
                 resp.raise_for_status()

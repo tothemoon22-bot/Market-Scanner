@@ -144,6 +144,44 @@ checked for fractional residue.
 
 ## WebSocket
 
+### The WebSocket requires authentication, so this project does not use it
+
+Verified 2026-08-04 from this environment: both
+`wss://external-api-ws.kalshi.com/trade-api/ws/v2` and the elections host
+return **HTTP 401 on the upgrade handshake without credentials**. There is no
+unauthenticated WebSocket. The "public channels" below are public in the sense
+that they need no *per-channel* entitlement — the connection itself is still
+signed.
+
+That collides directly with hard constraint 1: no credentials on disk, no
+authenticated endpoints. Both cannot hold.
+
+> **The no-credentials constraint takes precedence, and REST polling is the
+> permanent design — not a workaround, not a stopgap, and not something to
+> revisit when someone has an API key handy.**
+
+Three reasons it is permanent rather than provisional:
+
+1. The constraint is the one the entire repository is built and grep-tested
+   against. `src/execution/` is empty by construction; `scanner/guard.py` exits
+   non-zero if any `KALSHI_*` credential is present in the environment. Adding a
+   signed WebSocket means deleting that guard, which is the property that makes
+   this instrument safe to leave running unattended.
+2. **The phenomenon does not need it.** The monitor's time constant is weeks —
+   it watches tick structures, fee schedules and the fee-free universe, all of
+   which change on the order of exchange policy announcements. The tracked
+   subset already polls at 15 seconds. That is three to four orders of magnitude
+   finer than the thing being observed; sub-second books would add resolution to
+   an axis that has no signal on it. See `docs/NEGATIVE_RESULT.md` § "First
+   dynamics" for the measured drift rates.
+3. Authenticating would make this a different project with a different risk
+   surface, which is a new spec, not a change to this one.
+
+If a future reader is tempted: the temptation is the WebSocket's latency, and
+latency was never the binding constraint. The bid-ask spread was.
+
+### Mechanics, recorded for completeness
+
 Single connection, JSON messages, subscribe by channel plus `market_ticker` /
 `market_tickers`. Kalshi sends a Ping control frame every 10 seconds.
 
@@ -189,9 +227,15 @@ is self-service via the Upgrade Account API Usage Level endpoint; above that is
 volume-gated. Buckets hold one to two seconds of budget, so a burst of up to 2x
 the per-second budget is possible after a quiet period.
 
-Implication for Phase 1: **20 REST reads/s does not cover polling thousands of
-markets.** The pipeline must be WebSocket-first, with REST used for snapshots,
-reconciliation and the batch `GET /markets/orderbooks` call.
+**20 REST reads/s does not cover polling thousands of markets** at book
+granularity. That was written as an argument for a WebSocket-first pipeline; it
+is not one, because the WebSocket needs credentials (above). What it actually
+constrains is scope, and the standing monitor is scoped to fit: an hourly
+exchange-wide sweep of ~77 paginated pages, plus a 15-second poll of the ~14
+events the findings rest on. Both are public, unauthenticated, and well inside
+Basic tier. 429s are counted and surfaced on the health panel rather than
+swallowed — a rate-limited scanner that stays quiet is a scanner on its way to
+an IP block.
 
 ## Taxonomy
 

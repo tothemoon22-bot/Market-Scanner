@@ -82,6 +82,12 @@ class ScannerState:
 
     reference: dict[str, dict[str, Any]] = field(default_factory=dict)
 
+    #: Per-series oscillation bands and the below-par push/suppress split.
+    bands: dict[str, Any] | None = None
+    below_par: dict[str, Any] | None = None
+    ntfy: dict[str, Any] | None = None
+    rate_limit_hits: int = 0
+
     invariant_violations: int = 0
     invariant_last: dict[str, Any] | None = None
 
@@ -160,6 +166,10 @@ class ScannerState:
                     ),
                     "peak_proximity_pct": self.peak_proximity_pct,
                 },
+                "bands": self.bands,
+                "below_par": self.below_par,
+                "ntfy": self.ntfy,
+                "rate_limit_hits": self.rate_limit_hits,
                 "invariant": {
                     "violations": self.invariant_violations,
                     "last": self.invariant_last,

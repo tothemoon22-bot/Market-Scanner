@@ -27,6 +27,15 @@ investigation:
 - **The size gate is `>= 1` contract everywhere.** Kalshi contracts trade down
   to 0.01, so a leg can display an offer worth nine hundredths of a cent.
 
+A third rule was added after the monitor's first live alert:
+
+- **When building a check, ask whether the check shares a failure mode with what
+  it checks.** Partition verification once inferred its own granularity from the
+  joins it was inspecting, and certified a partition with a hole; the dashboard's
+  staleness banner reported an age that froze when the feed froze. See
+  [`../docs/NEGATIVE_RESULT.md`](../docs/NEGATIVE_RESULT.md) § "The one pattern
+  behind every broken check".
+
 ## Relationship to the live scanner
 
 `scanner/` and `dashboard/` render this same logic continuously — they import
@@ -64,7 +73,7 @@ a year of weekly spread distributions answers questions the alerts cannot.
 | Exchange publishes scheduled fee changes | any |
 | `linear_cent` median spread | ≤ 2¢ |
 | Fee-free series with open markets | change ≥ 3 |
-| Verified partition below par, tradeable, **and** new or ≥ 20%/yr | any |
+| Verified partition below par and tradeable | see below |
 | Any deci-cent ∩ fee-free market below par | any |
 
 Every alert carries the trigger, the baseline value, the current value, the
@@ -78,8 +87,39 @@ The spec called for firing on any below-par verified partition with capacity
 contracts, 1.47%/yr — which the closing analysis examined and dismissed on
 return and capacity. Firing on "any" would page every week about a known
 non-opportunity, which is precisely the failure mode this monitor is designed to
-avoid. It fires when the structure is *new*, or when a known one crosses the
-20%/yr return gate that would have changed the close decision.
+avoid.
+
+`alerts.classify_below_par` therefore has three routes through, in order of
+authority:
+
+1. **Annualized ≥ 20%/yr pushes regardless of size.** This is the return that
+   would have changed the close decision, and the branch is deliberately
+   *unfloored*: a genuinely high-return structure is news at any capacity.
+2. **A new structure pushes only if capacity × edge ≥ $25.** The floor was added
+   on live evidence, not on taste — the first real alert, `KXGDPYEAR-28` at 98¢
+   on 15 contracts, was worth **$0.30**, and § "First dynamics" in the memo
+   shows these baskets moved a median of 5¢ over 33 hours against a 2¢
+   excursion. Below par alone is drift noise.
+3. **Falling outside a series' own observed band counts as new.** A series that
+   has always oscillated between 95¢ and 105¢ has done nothing novel by printing
+   98¢.
+
+### Bands, and an honest cold start
+
+A band computed from two observations is two points with a line through them. So
+a series with fewer than `history.MIN_OBSERVATIONS_FOR_BAND` (8) observations
+reports `UNKNOWN`, never claims an observation is outside it, and falls back to
+the dollar floor alone. The trigger board shows the state and how many more
+observations are needed. Bands tighten as the archive grows; nothing back-fills,
+interpolates, or assumes a distribution.
+
+### Suppression applies to the push, never to the record
+
+Every sub-floor detection is written to `data/monitor/suppressed.jsonl` with its
+reason, and surfaced on the trigger board as a rolling 90-day count broken down
+by reason. **A spike in that count is a signal even when no individual detection
+clears the floor** — which is the guard against a threshold quietly hiding a
+real change while the monitor still looks healthy.
 
 ## What it cannot see
 

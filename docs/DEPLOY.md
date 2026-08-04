@@ -24,15 +24,28 @@ UI carries a persistent amber banner saying so.
 
 | Loop | Interval | What it costs |
 | --- | --- | --- |
-| Full sweep | 900s | 17-75s of paced requests; ~77 pages plus series metadata |
+| Full sweep | 3600s | 17-75s of paced requests; ~77 pages plus series metadata |
 | Tracked subset | 15s | 14 requests, ~2s, the fee-free series the findings rest on |
 | Reference spot | 1s | 6 requests to two public hosts |
+| Heartbeat push | 30d | one ntfy notification, priority `min` |
 
-The full-sweep interval is a choice, not a limit. Measured sweep durations span
-17s to 75s depending on how much of the series metadata is already warm and how
-often the exchange makes us back off. The dashboard reports
-the **achieved** interval and last duration rather than the configured one, so a
-box that cannot keep up says so.
+**The full sweep is hourly because the phenomenon is not faster than that.**
+The exchange-wide statistics it computes — tick structure mix, fee types, the
+fee-free universe, segment spread distributions — have a time constant of days
+to weeks. Sweeping every 15 minutes bought no resolution and spent four times
+the request budget against a rate limiter that can IP-block us, which would kill
+the monitor outright for zero benefit. The tracked subset stays at 15s because
+it is 14 requests rather than 77 pages.
+
+The interval is a choice, not a limit. Measured sweep durations span 17s to 75s
+depending on how much of the series metadata is already warm and how often the
+exchange makes us back off. The dashboard reports the **achieved** interval and
+last duration rather than the configured one, so a box that cannot keep up says
+so — and it labels the two cadences separately, because one number covering both
+would be a number the system does not measure.
+
+429 responses are counted and shown on the health panel. A rate-limited scanner
+that stays quiet is a scanner on its way to a block.
 
 ## Hosting
 
@@ -84,32 +97,75 @@ the live view; the Actions job is the durable record. **Do not consolidate
 them.** A dashboard that renders stale data cheerfully is the same silent death
 as a disabled cron, and the two failures should not share a single point.
 
-## Phone alerts — what works, and what does not
+## Phone alerts
 
-**Works:** the dashboard installs as a PWA, and when a trigger *transitions*
-into the fired state the page raises a Notification. Only transitions notify; a
-trigger that is already firing does not re-notify on every push, because a
-notification that repeats is a notification that gets dismissed unread.
+**The dashboard does not solve notification transport, and no longer pretends
+to.** Foreground Web Notifications only fire while the page is open, which is
+useless for an instrument that will almost never be open. Web Push would fix
+that and needs a VAPID key pair, a subscription store and a browser-vendor push
+endpoint — a hosting task with a key to manage. It is not built, and the partial
+Notifications path that used to exist has been removed rather than left as dead
+code.
 
-**Does not work yet:** delivery while the app is fully closed. That needs Web
-Push, which needs a VAPID key pair and a push endpoint, neither of which exists
-here. Implementing it means generating VAPID keys on the host, storing
-subscriptions, and posting to the browser vendor's push service. That is a
-hosting task with a key to manage, so it is left undone rather than half-built.
+Transport is [ntfy](https://ntfy.sh) instead. Its own app handles background
+delivery, so the split is clean: **ntfy pushes, the PWA browses.**
 
-Until then the honest reading is: the dashboard alerts you when you look at it,
-or when it is open in the background. It does not wake your phone.
+```bash
+# /etc/systemd/system/kalshi-scanner.service.d/ntfy.conf
+[Service]
+Environment=NTFY_TOPIC=<a long random string you choose>
+Environment=NTFY_SERVER=https://ntfy.sh    # optional; this is the default
+```
+
+Subscribe the phone app to the same topic. The topic **is** the credential: an
+ntfy topic is a shared secret in a URL, so pick something unguessable. It is
+read from the environment, never logged, never included in an error message, and
+never rendered by the dashboard — the health panel shows `configured` or
+`not configured` and nothing else.
+
+If `NTFY_TOPIC` is unset the notifier is a no-op that says so on the health
+panel. It does not fail silently and it does not block the scanner.
+
+| Push | Priority | Tag |
+| --- | --- | --- |
+| A fired trigger | `high` | `rotating_light` |
+| Monthly proof of life | `min` | `heartbeat` |
+
+The heartbeat exists so a quiet monitor is distinguishable from a dead one, and
+carries its own tag so it can be muted without muting real alerts.
+
+## What suppresses an alert, and what a suppression is not
+
+A below-par verified partition pushes only if capacity × edge clears **$25**, or
+if its annualized return clears 20%/yr — the second branch is deliberately
+unfloored, because a genuinely high-return structure is news at any size.
+
+The floor exists because the first live alert was worth **$0.30**. See
+`docs/NEGATIVE_RESULT.md` § "First dynamics": these baskets moved a median of 5¢
+over 33 hours against a below-par excursion of 2¢, so below par alone is noise.
+
+**Suppression applies to the push, never to the record.** Every sub-floor
+detection is written to `data/monitor/suppressed.jsonl` and shown on the trigger
+board as a rolling 90-day count broken down by reason. A spike in that count is
+a signal in its own right — which is the guard against a threshold quietly
+hiding a real change.
+
+Per-series oscillation bands work the same way, and the cold start is not faked.
+A band needs 8 observations before it means anything; below that the series
+reports `UNKNOWN`, the band branch is skipped entirely, and the dollar floor
+carries the decision alone. The trigger board shows the state and how many more
+observations a band needs, so an `UNKNOWN` is visibly not a verified range.
 
 ## What the dashboard does not have, and why
 
-The scanner **cannot** use Kalshi's WebSocket. The handshake requires
-authentication — `wss://external-api-ws.kalshi.com/trade-api/ws/v2` and the
-elections host both return HTTP 401 without credentials, verified directly. The
-brief asked for live books over WS *and* for no authenticated endpoints; those
-cannot both hold. The no-credentials constraint won, because it is the one the
-whole project has been built and grep-tested against, and because a scanner that
-holds a key to read faster is a different object with a different risk profile.
+The scanner **cannot** use Kalshi's WebSocket: the handshake requires
+authentication, verified as HTTP 401 on both production hosts. The brief asked
+for live books over WS *and* for no authenticated endpoints; those cannot both
+hold, and the no-credentials constraint takes precedence.
 
-The consequence is that the tracked subset refreshes every ~15 seconds rather
-than on every book update. For an instrument whose job is to notice a structural
-change over weeks, that is not the binding limitation.
+**REST polling is the permanent design, not a workaround.** The tracked subset
+refreshes every ~15 seconds rather than on every book update, which is already
+three to four orders of magnitude finer than a phenomenon whose time constant is
+weeks. Full reasoning in
+[`docs/venues/kalshi/README.md`](venues/kalshi/README.md) § "The WebSocket
+requires authentication". Nobody should re-attempt this later.

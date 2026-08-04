@@ -27,15 +27,22 @@ import httpx
 from monitor import alerts as alerts_mod
 from monitor import collect, metrics
 from monitor.checks import tradeable_size
-from scanner import funnel, reference, triggers
+from scanner import funnel, history, notify, reference, triggers
 from scanner.state import ScannerState, now
 
 D = Decimal
 
-FULL_SWEEP_INTERVAL = 900.0  # 15 min; a sweep is ~75s of paced requests
+# Exchange-wide statistics have a time constant of days. Hourly is already far
+# finer than the phenomenon; faster buys nothing and risks an IP block, which
+# would kill the monitor for zero benefit. The tracked subset stays fast because
+# it is 14 requests, not 77 pages.
+FULL_SWEEP_INTERVAL = 3600.0
 TRACKED_INTERVAL = 15.0
 REFERENCE_INTERVAL = 1.0
 REQUEST_SPACING = 0.12
+
+#: Monthly proof of life, so a quiet monitor is distinguishable from a dead one.
+HEARTBEAT_INTERVAL = 30 * 86400.0
 
 
 async def _paced_get(
@@ -97,21 +104,94 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
             state.ready = True
             source.ok()
 
-            fired = alerts_mod.evaluate(baseline, computed)
+            history.record(state.partitions or [])
+            bands = history.bands()
+            state.bands = {k: v.as_dict() for k, v in sorted(bands.items())}
+
+            below = alerts_mod.classify_below_par(baseline, computed, bands)
+            history.record_suppressed(below.suppressed)
+            state.below_par = {
+                "pushed": below.pushed,
+                "suppressed": below.suppressed,
+                "window": history.suppressed_window(),
+            }
+
+            fired = alerts_mod.evaluate(baseline, computed, bands=bands)
+            state.triggers = [t.__dict__ for t in triggers.evaluate(baseline, computed, bands)]
+
+            hits = collect.rate_limit_hits
+            if hits > state.rate_limit_hits:
+                state.log(
+                    "rate-limit",
+                    f"exchange returned 429 {hits - state.rate_limit_hits} time(s) during this "
+                    "sweep; backed off and retried",
+                )
+                state.rate_limit_hits = hits
+
             state.log(
                 "sweep",
                 f"full sweep complete: {manifest['n_markets']:,} markets in "
                 f"{state.sweep_seconds:.0f}s",
                 markets=manifest["n_markets"],
             )
+            for item in below.suppressed:
+                state.log(
+                    "suppressed",
+                    f"{item['event']} below par at {item['cost_cents']}c but not pushed: "
+                    f"{item['suppressed_because']}",
+                )
             for alert in fired:
                 state.log("alert", alert.trigger, baseline=alert.baseline, current=alert.current)
+            await _push(state, fired)
         except Exception as exc:  # noqa: BLE001
             source.failed(f"{type(exc).__name__}: {exc}")
             state.log("error", f"full sweep failed: {type(exc).__name__}: {exc}")
 
         state.beat()
         await asyncio.sleep(max(0.0, FULL_SWEEP_INTERVAL - (time.monotonic() - started)))
+
+
+async def _push(state: ScannerState, fired: list) -> None:
+    """Deliver fired alerts to the phone via ntfy. Never raises into the loop."""
+    cfg = notify.config_from_env()
+    source = state.source("ntfy")
+    if not cfg.configured:
+        state.ntfy = {"configured": False, "target": cfg.redacted()}
+        return
+    state.ntfy = {"configured": True, "target": cfg.redacted()}
+    if not fired:
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            sent = await notify.push_alerts(client, cfg, fired)
+        source.ok()
+        state.log("push", f"pushed {sent} alert(s) to ntfy")
+    except Exception as exc:  # noqa: BLE001
+        source.failed(f"{type(exc).__name__}: {exc}")
+        state.log("error", f"ntfy push failed: {type(exc).__name__}")
+
+
+async def heartbeat_loop(state: ScannerState) -> None:
+    """Monthly, low priority, distinct tag. A silent monitor must still prove
+    it is alive, or its silence stops being evidence of anything."""
+    cfg = notify.config_from_env()
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL)
+        if not cfg.configured:
+            continue
+        try:
+            summary = (
+                f"{state.sweep_count} sweeps, uptime "
+                f"{(now() - state.started_at).days}d, "
+                f"{(state.below_par or {}).get('window', {}).get('count', 0)} suppressed "
+                "detections in the rolling window."
+            )
+            async with httpx.AsyncClient() as client:
+                await notify.push_heartbeat(client, cfg, summary)
+            state.source("ntfy").ok()
+            state.log("push", "monthly heartbeat sent")
+        except Exception as exc:  # noqa: BLE001
+            state.source("ntfy").failed(f"{type(exc).__name__}: {exc}")
 
 
 def _record_proximity(state: ScannerState) -> None:
@@ -274,6 +354,7 @@ async def run(state: ScannerState, baseline: dict) -> None:
         asyncio.create_task(full_sweep_loop(state, baseline)),
         asyncio.create_task(tracked_loop(state)),
         asyncio.create_task(reference_loop(state)),
+        asyncio.create_task(heartbeat_loop(state)),
     ]
     try:
         await asyncio.gather(*tasks)

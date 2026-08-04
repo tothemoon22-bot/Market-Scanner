@@ -277,3 +277,166 @@ def test_snapshot_mode_is_labelled_as_not_live():
     body = dashboard_app.payload()
     assert body["snapshot_source"] == SNAPSHOT.name
     assert (STATIC / "app.js").read_text().count("snapshot_source") >= 1
+
+
+# --------------------------------------------------------------------------
+# Part 2 -- the $25 floor, suppression-not-hiding, and cold-start bands.
+# --------------------------------------------------------------------------
+def _partition(event: str, cost: str, capacity: str, ann: str | None = "1.00") -> dict:
+    return {
+        "event": event,
+        "legs": 14,
+        "fee_multiplier": "0",
+        "tick_structure": "linear_cent",
+        "cost_cents": cost,
+        "below_par": D(cost) < 100,
+        "capacity_contracts": capacity,
+        "tradeable": D(capacity) >= 1,
+        "annualized_pct": ann,
+    }
+
+
+def _wrap(partitions: list[dict]) -> dict:
+    return {"verified_partitions": {"fee_free_detail": partitions}}
+
+
+def test_new_structure_below_the_dollar_floor_is_suppressed_not_pushed():
+    """The real first live alert: KXGDPYEAR-28 at 98c on 15 contracts = $0.30."""
+    from monitor.alerts import classify_below_par
+
+    result = classify_below_par(_wrap([]), _wrap([_partition("KXGDPYEAR-28", "98.00", "15.00")]))
+    assert result.pushed == []
+    assert len(result.suppressed) == 1
+    assert "$0.30" in result.suppressed[0]["suppressed_because"]
+    assert "$25" in result.suppressed[0]["suppressed_because"]
+
+
+def test_new_structure_above_the_dollar_floor_pushes():
+    from monitor.alerts import classify_below_par
+
+    result = classify_below_par(_wrap([]), _wrap([_partition("KXNEW-1", "95.00", "600")]))
+    assert len(result.pushed) == 1
+    assert result.pushed[0]["dollar_value"] == "30.00"
+
+
+def test_high_return_pushes_regardless_of_size():
+    """The 20%/yr override is deliberately unfloored."""
+    from monitor.alerts import classify_below_par
+
+    tiny = _partition("KXNEW-2", "99.00", "1", ann="45.00")
+    result = classify_below_par(_wrap([]), _wrap([tiny]))
+    assert len(result.pushed) == 1
+    assert "annualized" in result.pushed[0]["pushed_because"]
+    assert D(result.pushed[0]["dollar_value"]) < D(25)
+
+
+def test_suppressed_detections_are_still_recorded(tmp_path):
+    """Suppression applies to the push, never to the record."""
+    from scanner import history
+
+    ledger = tmp_path / "suppressed.jsonl"
+    history.record_suppressed(
+        [dict(_partition("KXGDPYEAR-28", "98.00", "15.00"),
+              dollar_value="0.30", suppressed_because="below floor")],
+        path=ledger,
+    )
+    window = history.suppressed_window(path=ledger)
+    assert window["count"] == 1
+    assert window["by_reason"] == {"below floor": 1}
+
+
+def test_band_is_unknown_until_enough_observations(tmp_path):
+    """Cold start is not faked: a band from two points is two points."""
+    from scanner import history
+
+    path = tmp_path / "history.jsonl"
+    for cost in ("103.00", "98.00"):
+        history.record([_partition("KXGDPYEAR-28", cost, "15.00")], path=path)
+    band = history.bands(path=path)["KXGDPYEAR"]
+    assert band.observations == 2
+    assert band.state == "UNKNOWN"
+    assert not band.known
+    assert band.as_dict()["needs"] == history.MIN_OBSERVATIONS_FOR_BAND - 2
+    # An UNKNOWN band never claims an observation is outside it.
+    assert band.is_outside(D("1.00")) is False
+
+
+def test_band_becomes_known_and_bounds_the_series(tmp_path):
+    from scanner import history
+
+    path = tmp_path / "history.jsonl"
+    for cost in ("103", "98", "101", "99", "104", "97", "100.5", "102"):
+        history.record([_partition("KXGDPYEAR-28", cost, "15.00")], path=path)
+    band = history.bands(path=path)["KXGDPYEAR"]
+    assert band.state == "KNOWN"
+    assert band.crossings > 0, "the fixture crosses par repeatedly"
+    assert band.is_outside(D("90")) is True
+    assert band.is_outside(D("99")) is False, "inside the observed range is not new"
+
+
+def test_known_band_makes_an_out_of_range_print_newsworthy(tmp_path):
+    from monitor.alerts import classify_below_par
+    from scanner import history
+
+    path = tmp_path / "history.jsonl"
+    for cost in ("103", "98", "101", "99", "104", "97", "100.5", "102"):
+        history.record([_partition("KXGDPYEAR-28", cost, "15.00")], path=path)
+    bands = history.bands(path=path)
+
+    known_at_baseline = _wrap([_partition("KXGDPYEAR-28", "98.00", "15.00")])
+    outside = _wrap([_partition("KXGDPYEAR-28", "80.00", "600")])
+    result = classify_below_par(known_at_baseline, outside, bands)
+    assert len(result.pushed) == 1, "outside its own band, and worth $120"
+
+
+def test_dollar_value_ignores_sub_contract_capacity():
+    from scanner.history import dollar_value
+
+    assert dollar_value(D("91.00"), D("0.01")) == D(0)
+    assert dollar_value(D("95.00"), D("10")) == D("0.50")
+
+
+# --------------------------------------------------------------------------
+# Part 4 -- ntfy is the transport; the dashboard does not push.
+# --------------------------------------------------------------------------
+def test_ntfy_topic_is_never_echoed():
+    from scanner.notify import config_from_env
+
+    cfg = config_from_env({"NTFY_TOPIC": "a-secret-topic-name"})
+    assert cfg.configured
+    assert "a-secret-topic-name" not in cfg.redacted()
+
+
+def test_ntfy_is_a_no_op_when_unconfigured():
+    from scanner.notify import config_from_env
+
+    cfg = config_from_env({})
+    assert not cfg.configured
+    assert cfg.redacted() == "<not configured>"
+
+
+def test_alert_payload_carries_the_required_lines():
+    from monitor.alerts import FOOTER
+    from scanner.notify import alert_body
+
+    body = alert_body("t", "b", "c", "Finding 1")
+    for fragment in ("baseline: b", "current:  c", "NEGATIVE_RESULT.md -> Finding 1", FOOTER):
+        assert fragment in body
+
+
+def test_dashboard_no_longer_implements_notifications():
+    """Part 4: removed rather than left as a dead path."""
+    source = (STATIC / "app.js").read_text()
+    code = strip_comments(source)
+    assert "new Notification(" not in code
+    assert "requestPermission" not in code
+
+
+# --------------------------------------------------------------------------
+# Part 1 -- cadence.
+# --------------------------------------------------------------------------
+def test_full_sweep_is_throttled_to_at_least_hourly():
+    from scanner import engine
+
+    assert engine.FULL_SWEEP_INTERVAL >= 3600, "exchange-wide stats change over days"
+    assert engine.TRACKED_INTERVAL <= 60, "the tracked subset stays fast"

@@ -53,6 +53,13 @@ held a credential; every measurement here came from public endpoints.
    `mutually_exclusive` flag.
 3. Secrets would live in `.env` (gitignored) or the OS keychain. None were ever
    needed. `tools/secret_scan.py` runs pre-commit regardless.
+4. **When building a check, ask whether the check shares a failure mode with
+   what it checks.** Freshness monitors that go stale, gap detectors with gaps,
+   consistency checks that are vacuously consistent. Every check that broke here
+   broke that way; the defence is to source the standard of correctness from
+   somewhere other than the thing under test. See
+   [`docs/NEGATIVE_RESULT.md`](docs/NEGATIVE_RESULT.md) § "The one pattern
+   behind every broken check".
 
 ## Start here
 
@@ -71,6 +78,10 @@ Supporting evidence, in the order it was produced:
   spread distribution that turned out to be the binding constraint
 - [`research/PHASE05_REPORT.md`](research/PHASE05_REPORT.md) — the five
   kill-shot experiments
+- [`research/RECONCILIATION.md`](research/RECONCILIATION.md) — baseline versus
+  live population, reconciled by set difference rather than by counts
+- [`research/drift.json`](research/drift.json) — partition drift between sweeps,
+  the data behind the memo's "First dynamics"
 - [`docs/venues/kalshi/fees.md`](docs/venues/kalshi/fees.md) — fee evidence trail
 - [`docs/venues/kalshi/README.md`](docs/venues/kalshi/README.md) — API notes
 
@@ -115,6 +126,9 @@ unauthenticated.
 .venv/bin/python -m src.research.spread_study      # research/SPREAD_STUDY.md
 .venv/bin/python -m src.research.fee_free_check    # the closing query
 .venv/bin/python -m monitor.run --from monitor/snapshots/20260803T070632Z_t0
+.venv/bin/python -m src.research.drift \
+  --a monitor/snapshots/20260803T070632Z_t0 \
+  --b monitor/snapshots/20260803T071019Z_t1   # research/drift.json, "First dynamics"
 ```
 
 Every table in the documentation is generated, not hand-typed. Change the model,
@@ -131,6 +145,11 @@ Mobile-first, installable as a PWA. The hero is not P&L — it is the
 falsification surface: actionable count, the trigger closest to firing, and how
 long the window of observation actually is. Deployment, cadences, and the two
 things it deliberately does not do are in [`docs/DEPLOY.md`](docs/DEPLOY.md).
+
+**ntfy pushes, the PWA browses.** The dashboard does not solve notification
+transport — foreground-only Web Notifications cannot wake a phone, so they were
+removed rather than left half-built. Set `NTFY_TOPIC` and the scanner pushes
+fired triggers plus a monthly heartbeat.
 
 **No panel displays a number the system does not measure.** Anything unmeasured
 renders an explicit NO DATA state; `0 actionable` and `scanner offline` are

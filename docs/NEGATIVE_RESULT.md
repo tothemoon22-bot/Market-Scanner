@@ -184,6 +184,121 @@ credit locked for a week.
 
 ---
 
+## First dynamics — what the below-par crossings actually are
+
+Findings 1–5 are a still photograph. This section is the first motion, and it
+changes how a below-par print should be read. Added 2026-08-04, after the
+population reconciliation in
+[`research/RECONCILIATION.md`](../research/RECONCILIATION.md) confirmed the two
+sweeps describe the same universe rather than two different filters.
+
+**Three observations, not a time series.** t0 2026-08-03T07:06Z, t1 07:10Z
+(+4 minutes), and one live sweep 2026-08-04T16:22Z (+33.3 hours). Everything
+below is a two-point difference over 33 hours. It is not weekly data and should
+not be quoted as if it were.
+
+### The magnitudes
+
+All 13 fee-free verified partitions, Σask at t0 versus live:
+
+| | Value |
+| --- | --- |
+| Median absolute move | **5.0¢** |
+| Largest move | 18.0¢ (`KXGDPYEAR-27`, 144¢ → 126¢) |
+| Unchanged | 2 of 13 |
+| Below par | 2 → **3** |
+| Below par *and* tradeable at size ≥ 1 | 1 → **2** |
+
+The single new entrant is `KXGDPYEAR-28`, 103¢ → 98¢ — the transition that
+fired the monitor's first live alert.
+
+**The ordinary 33-hour drift of these baskets is 5¢. The entire below-par
+excursion that triggered the alert is 2¢.** The signal is smaller than the
+noise it sits in.
+
+### The mechanism is spread compression, not repricing
+
+Σask fell by a median of 3¢ while Σbid *rose* by a median of 7¢. Both sides
+moved toward each other, which is not a change of view — it is the basket's own
+bid-ask collapsing:
+
+| Partition | Basket width t0 | Basket width live |
+| --- | --- | --- |
+| `KXGDPYEAR-27` | 83¢ | 30¢ |
+| `KXGDPYEAR-31` | 46¢ | 24¢ |
+| `KXGDPYEAR-30` | 36¢ | 14¢ |
+| `KXGDPYEAR-28` | 29¢ | **14¢** |
+
+Seven of the eleven GDP baskets now sit at a width of exactly 14.00¢ — fourteen
+legs at a 1¢ tick, the tightest a 14-leg basket on a cent grid can possibly be.
+
+For `KXGDPYEAR-28` specifically, the basket's midpoint *rose* 2.5¢ (88.5¢ →
+91.0¢) over the same interval in which its ask sum fell 5¢. The market moved up
+and the ask moved down, because the half-width the ask carries above the mid
+shrank from 14.5¢ to 7¢. Nothing was revalued.
+
+### The noise floor is set by the tick
+
+A basket's width cannot fall below `N × tick`, so a 14-leg partition on a cent
+grid can never quote tighter than 14¢, and its ask sum sits at least 7¢ above
+its own midpoint. That half-width is not a fixed offset. It moves whenever the
+width moves, and it drags Σask with it at no cost in opinion.
+
+`KXGDPYEAR-28` is the worked case. Its width halved between the sweeps, 29¢ →
+14¢, which lowers Σask by 7.5¢ on its own. Its midpoint over the same interval
+*rose* 2.5¢. Net −5¢, and a crossing of par. **All of the crossing came from the
+width; the market's own estimate moved the other way.** Against that mechanism
+the excursion is 2¢ — under a third of the basket's half-width.
+
+The general form holds for every below-par observation to date: **the basket's
+own bid-ask is wider than its distance below par.** At t0, `-33` sat 9¢ below
+par on a 16¢-wide book and `-29` 5¢ below on a 14¢ book; at the live sweep,
+`-28` 2¢ below on 14¢, `-29` 5¢ below on 14¢, `-33` 5¢ below on 15¢.
+
+One of those does exceed *half* its width, and it is worth naming rather than
+smoothing: `KXGDPYEAR-33` at t0, 9¢ below par against an 8¢ half-width. It is
+also the partition with **0.01 contracts** of capacity — the phantom-liquidity
+case from Finding 5, and the reason the size gate is `≥ 1` rather than `> 0`.
+The gate removes it before the noise floor has to.
+
+This is Finding 1 arriving from the other direction. There the per-leg spread
+set the threshold a mispricing had to clear to become visible; here the same
+quantity sets the amplitude with which the ask sum wanders across par for free.
+
+### The conclusion
+
+> **A verified partition printing below par is drift noise, not emergent edge.**
+> Crossing par is the expected behaviour of a basket whose own spread is wider
+> than its distance to par, which describes every one of these.
+
+Two consequences for the monitor, both already implemented:
+
+- Below par is not by itself a reason to wake anyone. What carries the alert is
+  capacity × edge clearing the dollar floor, or an annualized return clearing
+  the threshold that would have changed the close decision. `KXGDPYEAR-28` is
+  worth $0.30 in total and clears neither.
+- Drift is not a weekly phenomenon. The t0/t1 pair, **four minutes apart**,
+  leaves 12 of 13 partitions untouched but already contains a 3¢ move
+  (`KXGDPYEAR-30`, 116¢ → 113¢) on a market resolving in 2029 — one four-minute
+  step worth more than the entire alerting excursion. Any future claim that the
+  below-par count is trending has to beat that, and it needs an archive rather
+  than three sweeps.
+
+What would overturn this section is a below-par excursion exceeding the basket's
+own full width, or a below-par count that rises while widths stay constant.
+Neither has been observed — including for `KXGDPYEAR-33`, which exceeds half its
+width but not its width. Both conditions are asserted in `tests/test_drift.py`
+against the committed snapshots, so the section fails loudly rather than
+quietly. The monitor records every sweep, so the question is answerable later
+from an archive rather than from these three points.
+
+Regenerate with `python -m src.research.drift`; the numbers above come from
+`research/drift.json`, not from prose. The t0/t1 snapshots are committed under
+`monitor/snapshots/`; the live sweep's raw pages are not, because `data/` is
+gitignored — so `drift.json` is the committed record of that comparison.
+
+---
+
 ## Detector disposition
 
 | # | Detector | Status | Closing evidence | n |
@@ -229,6 +344,67 @@ to be persuasive.
 All three are the residual identity wearing different costumes. The defence is
 the same in each case and it is not a heuristic: **verify the partition, by
 naming the residual outcome, before computing anything.**
+
+---
+
+## The one pattern behind every broken check
+
+The section above is the market-side generalization. This is its instrument-side
+twin, and it is arguably the more transferable of the two, because it does not
+depend on prediction markets existing.
+
+> **When building a check, ask whether the check shares a failure mode with the
+> thing it checks.**
+
+Every check that broke during this project broke that way. Not one broke because
+its logic was wrong in isolation.
+
+**1. A gap detector with a gap in it.** Partition verification inferred the
+tiling granularity from the joins it observed. With only two interior buckets
+there is exactly *one* join, so any value is trivially "consistent" with itself
+— a 0.05 hole simply reads as a 0.06 granularity, and the checker certifies a
+partition that does not tile. The fix was to stop inferring the standard from
+the data under test: the step is now pinned to the grid the strikes are
+themselves quoted on (`_quoted_grid`). A gap detector that derives its notion of
+"no gap" from the gaps it is inspecting cannot detect the case where there is
+only one.
+
+**2. A freshness monitor that went stale.** The dashboard's offline banner
+reported the age of the last heartbeat it had received. When the feed froze,
+that number froze with it — a 64-second outage displayed as "21s ago", because
+the age itself stopped advancing. The banner whose entire job is to say *this
+data is old* was, itself, old data. Fixed by taking `max(client silence,
+reported age)`, sourcing the clock from the client rather than from the frozen
+payload; detection time fell from 64s to 26s.
+
+**3. A test that matched itself.** A guard scanning the dashboard source for
+placeholder markers matched the word "placeholder" in its own explanatory
+comment, and passed for the wrong reason. Another matched `bar` against the
+progress-bar CSS class. A check written in the same language as its subject,
+scanning a corpus that includes itself, is the degenerate case of the same
+error. Fixed by stripping comments before scanning and narrowing the patterns —
+after which the guard immediately caught a real regression it had been blind to.
+
+**4. And the inversion, which is the same insight paying out.** `bid(YES) +
+bid(NO) > 100¢` is impossible in a correctly reconstructed book. That makes it
+worthless as an opportunity detector — and therefore *valuable* as a continuous
+correctness check on our own ingest: observing it means our book is wrong, not
+that the market is. See the venue notes. That reading is only available once you
+have asked what a check's own failure looks like.
+
+The common structure in all four: **the check drew its standard of correctness
+from the same source as the thing it was checking.** The defence is to source
+the standard independently — the grid from the quoting convention rather than
+from the observed joins, the clock from the client rather than from the payload,
+the corpus from something that excludes the checker.
+
+The family is larger than these four and worth naming so it is recognisable on
+sight: freshness monitors that go stale, gap detectors with gaps, consistency
+checks that are vacuously consistent, coverage tools that do not cover
+themselves, secret scanners that log the secret they found, retry logic that
+retries the health check that decides whether to retry.
+
+This is a standing rule now; see `README.md` § "Hard constraints".
 
 ---
 

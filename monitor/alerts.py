@@ -6,6 +6,7 @@ only to say "the description in the memo has stopped being true."
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -53,7 +54,95 @@ def _get(d: dict, *path: str, default: Any = None) -> Any:
     return cur
 
 
-def evaluate(baseline: dict, current: dict, fee_changes: dict | None = None) -> list[Alert]:
+@dataclass(frozen=True)
+class BelowParResult:
+    """Split of below-par detections into what pushes and what is only recorded.
+
+    **Suppression applies to the push, never to the record.** Every sub-floor
+    detection stays in `suppressed`, is written to the time series, and is shown
+    on the trigger board as a rolling count. A spike in the suppressed count is
+    itself a signal even when no individual detection clears -- which is the
+    guard against a threshold quietly hiding a real change.
+    """
+
+    pushed: list[dict]
+    suppressed: list[dict]
+    known_events: set[str]
+
+    @property
+    def reasons(self) -> Counter:
+        return Counter(p["suppressed_because"] for p in self.suppressed)
+
+
+def classify_below_par(
+    baseline: dict, current: dict, bands: dict | None = None
+) -> BelowParResult:
+    """Decide which below-par partitions are worth waking someone for.
+
+    Three ways through, in order of authority:
+
+    1. **Annualized return >= 20%/yr** pushes regardless of size. A genuinely
+       high-return structure is news at any capacity -- this branch is unfloored
+       on purpose.
+    2. **New structure** pushes only if capacity x edge clears the dollar floor.
+       Live evidence: GDP partitions drift across par week to week, so "new"
+       alone fired on $0.30 of capacity.
+    3. **Outside the series' own observed band** counts as new. A series with
+       fewer than the minimum observations has no band, reports UNKNOWN, and
+       falls back to the dollar floor alone.
+    """
+    from scanner.history import MIN_DOLLAR_VALUE, dollar_value, series_of
+
+    known_events = {
+        p["event"]
+        for p in _get(baseline, "verified_partitions", "fee_free_detail", default=[])
+        if p["below_par"]
+    }
+    pushed: list[dict] = []
+    suppressed: list[dict] = []
+
+    for raw in _get(current, "verified_partitions", "fee_free_detail", default=[]):
+        if not (raw["below_par"] and raw["tradeable"]):
+            continue
+        p = dict(raw)
+        cost = D(p["cost_cents"])
+        capacity = D(p["capacity_contracts"])
+        value = dollar_value(cost, capacity)
+        ann = D(p["annualized_pct"]) if p["annualized_pct"] is not None else D(0)
+        band = (bands or {}).get(series_of(p["event"]))
+
+        p["dollar_value"] = str(value)
+        p["band_state"] = band.state if band else "UNKNOWN"
+        p["band_observations"] = band.observations if band else 0
+
+        if ann >= ANNUALIZED_ALERT_PCT:
+            p["pushed_because"] = f"annualized {ann}%/yr >= {ANNUALIZED_ALERT_PCT}%"
+            pushed.append(p)
+            continue
+
+        is_new = p["event"] not in known_events
+        if band is not None and band.known and band.is_outside(cost):
+            is_new = True
+
+        if not is_new:
+            p["suppressed_because"] = "already below par at baseline, and inside its band"
+            suppressed.append(p)
+        elif value < MIN_DOLLAR_VALUE:
+            p["suppressed_because"] = f"capacity x edge ${value} < ${MIN_DOLLAR_VALUE} floor"
+            suppressed.append(p)
+        else:
+            p["pushed_because"] = f"new structure worth ${value}"
+            pushed.append(p)
+
+    return BelowParResult(pushed=pushed, suppressed=suppressed, known_events=known_events)
+
+
+def evaluate(
+    baseline: dict,
+    current: dict,
+    fee_changes: dict | None = None,
+    bands: dict | None = None,
+) -> list[Alert]:
     alerts: list[Alert] = []
 
     # --- tick structure mix -------------------------------------------------
@@ -142,28 +231,17 @@ def evaluate(baseline: dict, current: dict, fee_changes: dict | None = None) -> 
     # this monitor is explicitly designed to avoid. Fire when the structure is
     # new, or when a known one crosses the return threshold that would have
     # changed the Part 0 decision.
-    known = {
-        p["event"]
-        for p in _get(baseline, "verified_partitions", "fee_free_detail", default=[])
-        if p["below_par"]
-    }
-    newsworthy = []
-    for p in _get(current, "verified_partitions", "fee_free_detail", default=[]):
-        if not (p["below_par"] and p["tradeable"]):
-            continue
-        ann = D(p["annualized_pct"]) if p["annualized_pct"] is not None else D(0)
-        if p["event"] not in known or ann >= ANNUALIZED_ALERT_PCT:
-            newsworthy.append(p)
-    if newsworthy:
+    result = classify_below_par(baseline, current, bands)
+    if result.pushed:
         alerts.append(
             Alert(
-                "verified partition below par, tradeable, and new or above the return gate",
-                f"{len(known)} known below-par partitions, max 1.47%/yr, "
+                "verified partition below par, tradeable, and newsworthy",
+                f"{len(result.known_events)} known below-par partitions, max 1.47%/yr, "
                 f"capacities 10 and 0.01 contracts",
                 "; ".join(
                     f"{p['event']} at {p['cost_cents']}c, {p['capacity_contracts']} contracts, "
-                    f"{p['annualized_pct']}%/yr"
-                    for p in newsworthy
+                    f"{p['annualized_pct']}%/yr, ${p['dollar_value']} total"
+                    for p in result.pushed
                 ),
                 "Finding 5 - the two below-par results",
             )

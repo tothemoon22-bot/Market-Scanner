@@ -152,8 +152,25 @@ function renderTriggers(p) {
         · baseline ${t.baseline === null ? "—" : esc(t.baseline)}
         · threshold ${esc(t.threshold)}</div>
       ${has ? `<div class="bar"><i style="width:${Math.min(100, Math.max(1, pctNum))}%"></i></div>` : ""}
+      ${renderSuppressed(t, p)}
     </div>`;
   }).join("");
+}
+
+/* Suppressed detections are recorded, never hidden. A rising count is a signal
+   even when nothing individually clears the floor -- that is the guard against
+   a threshold quietly masking a real change. */
+function renderSuppressed(t, p) {
+  const d = t.detail || {};
+  if (d.suppressed_now === undefined) return "";
+  const w = (p.below_par || {}).window;
+  const bands = (d.band_states || []).join("/");
+  const windowText = w && w.count !== undefined
+    ? `${w.count} suppressed in the last ${w.window_days}d`
+    : NO_DATA("suppression ledger not yet written");
+  return `<div class="vals dim">${d.suppressed_now} suppressed now ·
+    ${windowText} · band ${bands === "KNOWN" ? "<b>known</b>"
+      : `<span class="warn">${esc(bands)}</span> (needs more observations)`}</div>`;
 }
 
 /* ------------------------------------------------------------ tripwire --- */
@@ -306,10 +323,12 @@ function renderHealth(p) {
   rows.push(`<div class="kv"><span class="k">Last sweep duration</span>
     <span class="v num">${sweep.last_duration_seconds === null || sweep.last_duration_seconds === undefined
       ? NO_DATA("no sweep has completed") : sweep.last_duration_seconds.toFixed(0) + "s"}</span></div>`);
-  rows.push(`<div class="kv"><span class="k">Achieved sweep interval</span>
+  rows.push(`<div class="kv"><span class="k">Achieved full-sweep interval
+      <br><span class="dim">exchange-wide stats; throttled, time constant is days</span></span>
     <span class="v num">${sweep.achieved_interval_seconds === null || sweep.achieved_interval_seconds === undefined
       ? NO_DATA("needs two sweeps to measure") : Math.round(sweep.achieved_interval_seconds) + "s"}</span></div>`);
-  rows.push(`<div class="kv"><span class="k">Tracked subset poll</span>
+  rows.push(`<div class="kv"><span class="k">Achieved tracked-subset interval
+      <br><span class="dim">fee-free series the findings rest on</span></span>
     <span class="v num">${p.tracked_poll_seconds === null || p.tracked_poll_seconds === undefined
       ? NO_DATA("tracked loop has not completed a cycle") : p.tracked_poll_seconds.toFixed(1) + "s"}
       ${p.tracked_age_seconds !== null && p.tracked_age_seconds !== undefined
@@ -318,6 +337,14 @@ function renderHealth(p) {
   rows.push(`<div class="kv"><span class="k">Invariant violations
       <br><span class="dim">bid_YES + bid_NO &gt; 100¢ — our book is wrong</span></span>
     <span class="v num ${inv.violations ? "bad" : "good"}">${num(inv.violations ?? 0)}</span></div>`);
+  const ntfy = p.ntfy;
+  rows.push(`<div class="kv"><span class="k">Push transport (ntfy)</span>
+    <span class="v">${!ntfy ? NO_DATA("no sweep has completed")
+      : ntfy.configured ? `<span class="good">CONFIGURED</span>`
+        : `<span class="warn">NOT CONFIGURED</span>`}
+      <br><span class="dim">${ntfy ? esc(ntfy.target) : ""}</span></span></div>`);
+  rows.push(`<div class="kv"><span class="k">Rate-limit responses (429)</span>
+    <span class="v num ${p.rate_limit_hits ? "warn" : "good"}">${num(p.rate_limit_hits ?? 0)}</span></div>`);
   rows.push(`<div class="kv"><span class="k">Uptime</span>
     <span class="v num">${age(p.uptime_seconds) ?? NO_DATA("")}</span></div>`);
   el.innerHTML = rows.join("");
@@ -409,51 +436,14 @@ function render(p) {
   renderHealth(p);
   renderReference(p);
   renderLog(p);
-  notifyTransitions(p);
 }
 
-/* --------------------------------------------------------- notifications ---
- * Alerts surface on the phone via the Notification API, which works once the
- * PWA is installed and permission is granted. Only *transitions* into the
- * fired state notify -- a trigger that is already firing does not re-notify on
- * every push, which would train the reader to dismiss it.
- *
- * This is not Web Push: there is no VAPID key pair and no push service, so
- * nothing is delivered while the app is fully closed. See docs/DEPLOY.md.
+/* Notification transport is NOT this dashboard's job. Foreground-only Web
+ * Notifications were removed rather than left as a dead path: an instrument
+ * that will almost never be open cannot be alerted by a page that must be open.
+ * Pushing is ntfy's job, server-side -- see scanner/notify.py and docs/DEPLOY.md.
+ * PWA for browsing, ntfy for pushing.
  */
-let firedKeys = new Set();
-
-function notifyTransitions(p) {
-  if (!p.triggers) return;
-  const nowFired = new Set(p.triggers.filter((t) => t.fired).map((t) => t.key));
-  const fresh = [...nowFired].filter((k) => !firedKeys.has(k));
-  firedKeys = nowFired;
-  if (!fresh.length || !("Notification" in window) || Notification.permission !== "granted") return;
-  for (const key of fresh) {
-    const t = p.triggers.find((x) => x.key === key);
-    new Notification(`Trigger fired: ${t.label}`, {
-      body: `now ${t.value} ${t.unit} (baseline ${t.baseline}, threshold ${t.threshold}).\n` +
-            `An alert is a prompt to re-read the memo, not to trade.`,
-      tag: key,
-      icon: "/static/icon.svg",
-    });
-  }
-}
-
-function mountAlertOptIn() {
-  if (!("Notification" in window) || Notification.permission !== "default") return;
-  const el = document.createElement("div");
-  el.className = "banner snapshot";
-  el.innerHTML = `<button id="enable-alerts" style="font:inherit;min-height:44px;
-    background:transparent;border:1px solid currentColor;color:inherit;padding:0 .75rem">
-    Enable alerts on this device</button>`;
-  document.getElementById("banners").after(el);
-  el.querySelector("#enable-alerts").addEventListener("click", async () => {
-    await Notification.requestPermission();
-    el.remove();
-  });
-}
-mountAlertOptIn();
 
 /* Re-render on a timer as well as on push, so ages and the offline banner keep
    moving when the socket has gone quiet. A dashboard that renders stale numbers

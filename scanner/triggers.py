@@ -72,7 +72,7 @@ def _binary(fired: bool) -> str:
     return "100.0" if fired else "0.0"
 
 
-def evaluate(baseline: dict, current: dict) -> list[Trigger]:
+def evaluate(baseline: dict, current: dict, bands: dict | None = None) -> list[Trigger]:
     """One Trigger per alert condition in monitor/alerts.py, in board order."""
     out: list[Trigger] = []
 
@@ -187,20 +187,16 @@ def evaluate(baseline: dict, current: dict) -> list[Trigger]:
     )
 
     # 6 --- a tradeable below-par partition --------------------------------
-    known = {
-        p["event"]
-        for p in _get(baseline, "verified_partitions", "fee_free_detail", default=[])
-        if p["below_par"]
-    }
+    from monitor.alerts import classify_below_par
+
+    result = classify_below_par(baseline, current, bands)
     best_ann = D(0)
-    newsworthy: list[str] = []
     for p in _get(current, "verified_partitions", "fee_free_detail", default=[]):
-        if not (p["below_par"] and p["tradeable"]):
-            continue
-        ann = D(p["annualized_pct"]) if p["annualized_pct"] is not None else D(0)
-        best_ann = max(best_ann, ann)
-        if p["event"] not in known or ann >= ANNUALIZED_ALERT_PCT:
-            newsworthy.append(p["event"])
+        if p["below_par"] and p["tradeable"] and p["annualized_pct"] is not None:
+            best_ann = max(best_ann, D(p["annualized_pct"]))
+    newsworthy = [p["event"] for p in result.pushed]
+    band_states = sorted({p.get("band_state", "UNKNOWN") for p in
+                          result.pushed + result.suppressed}) or ["UNKNOWN"]
     out.append(
         Trigger(
             key="below_par_partition",
@@ -215,7 +211,12 @@ def evaluate(baseline: dict, current: dict) -> list[Trigger]:
             else _proximity(ANNUALIZED_ALERT_PCT - best_ann, ANNUALIZED_ALERT_PCT, D(0))[0],
             fired=bool(newsworthy),
             memo_section="Finding 5 - the two below-par results",
-            detail={"newsworthy": sorted(newsworthy)},
+            detail={
+                "newsworthy": sorted(newsworthy),
+                "suppressed_now": len(result.suppressed),
+                "suppressed_reasons": dict(result.reasons),
+                "band_states": band_states,
+            },
         )
     )
 
