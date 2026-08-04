@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from scanner import process
+
 #: Beyond this the dashboard treats the scanner as offline rather than quiet.
 STALE_AFTER_SECONDS = 60
 
@@ -23,6 +25,15 @@ def now() -> datetime:
 
 def _age(ts: datetime | None) -> float | None:
     return None if ts is None else (now() - ts).total_seconds()
+
+
+def _mean(samples: deque[float]) -> float | None:
+    """None until there is something to average. Never 0.0 as a stand-in."""
+    return sum(samples) / len(samples) if samples else None
+
+
+def _drift(achieved: float | None, configured: float | None) -> float | None:
+    return None if achieved is None or configured is None else achieved - configured
 
 
 @dataclass
@@ -70,15 +81,27 @@ class ScannerState:
     sweep_seconds: float | None = None
     sweep_intervals: deque[float] = field(default_factory=lambda: deque(maxlen=20))
 
+    #: What the loops were *told* to do, set at startup from the engine's
+    #: constants. None until then, because a configured interval nobody
+    #: configured is not a measurement either. Drift between configured and
+    #: achieved is the early signal of throttling or backpressure.
+    configured_sweep_interval: float | None = None
+    configured_tracked_interval: float | None = None
+
     triggers: list[dict[str, Any]] | None = None
     funnel: list[dict[str, Any]] | None = None
     partitions: list[dict[str, Any]] | None = None
     tripwire: dict[str, Any] | None = None
 
-    # Tracked subset, polled far more often than the full sweep
+    # Tracked subset, polled far more often than the full sweep.
+    # `poll_seconds` is how long one cycle took; `intervals` is the gap between
+    # cycle starts. They are different numbers and the panel labels them so --
+    # showing a duration under the word "interval" is a number the system does
+    # not measure.
     tracked: list[dict[str, Any]] | None = None
     tracked_at: datetime | None = None
     tracked_poll_seconds: float | None = None
+    tracked_intervals: deque[float] = field(default_factory=lambda: deque(maxlen=40))
 
     reference: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -86,7 +109,11 @@ class ScannerState:
     bands: dict[str, Any] | None = None
     below_par: dict[str, Any] | None = None
     ntfy: dict[str, Any] | None = None
+
+    #: Lifetime 429 count, plus the timestamps behind it so a 24h figure is
+    #: counted rather than estimated from the lifetime total.
     rate_limit_hits: int = 0
+    rate_limit_at: deque[datetime] = field(default_factory=lambda: deque(maxlen=500))
 
     invariant_violations: int = 0
     invariant_last: dict[str, Any] | None = None
@@ -134,16 +161,28 @@ class ScannerState:
                 "stale_after_seconds": STALE_AFTER_SECONDS,
                 "heartbeat_age_seconds": heartbeat_age,
                 "uptime_seconds": (now() - self.started_at).total_seconds(),
+                "started_at": self.started_at.isoformat(),
+                "process": process.as_dict(),
                 "metrics": self.metrics,
                 "metrics_age_seconds": _age(self.metrics_at),
                 "sweep": {
                     "count": self.sweep_count,
                     "last_duration_seconds": self.sweep_seconds,
-                    "achieved_interval_seconds": (
-                        sum(self.sweep_intervals) / len(self.sweep_intervals)
-                        if self.sweep_intervals
-                        else None
+                    "achieved_interval_seconds": _mean(self.sweep_intervals),
+                    "configured_interval_seconds": self.configured_sweep_interval,
+                    "drift_seconds": _drift(
+                        _mean(self.sweep_intervals), self.configured_sweep_interval
                     ),
+                    "samples": len(self.sweep_intervals),
+                },
+                "tracked_loop": {
+                    "achieved_interval_seconds": _mean(self.tracked_intervals),
+                    "configured_interval_seconds": self.configured_tracked_interval,
+                    "drift_seconds": _drift(
+                        _mean(self.tracked_intervals), self.configured_tracked_interval
+                    ),
+                    "last_cycle_seconds": self.tracked_poll_seconds,
+                    "samples": len(self.tracked_intervals),
                 },
                 "triggers": self.triggers,
                 "funnel": self.funnel,
@@ -170,6 +209,20 @@ class ScannerState:
                 "below_par": self.below_par,
                 "ntfy": self.ntfy,
                 "rate_limit_hits": self.rate_limit_hits,
+                "rate_limit": {
+                    "lifetime": self.rate_limit_hits,
+                    "last_24h": sum(
+                        1 for at in self.rate_limit_at if (now() - at).total_seconds() <= 86400
+                    ),
+                    "last_at": (
+                        max(self.rate_limit_at).isoformat() if self.rate_limit_at else None
+                    ),
+                    # The deque is bounded, so a lifetime count beyond its
+                    # capacity cannot be re-derived from timestamps. Say so
+                    # rather than implying the 24h figure covers everything.
+                    "timestamps_retained": len(self.rate_limit_at),
+                    "timestamps_capacity": self.rate_limit_at.maxlen,
+                },
                 "invariant": {
                     "violations": self.invariant_violations,
                     "last": self.invariant_last,

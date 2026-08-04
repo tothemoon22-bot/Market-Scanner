@@ -267,9 +267,41 @@ quantity sets the amplitude with which the ask sum wanders across par for free.
 
 ### The conclusion
 
-> **A verified partition printing below par is drift noise, not emergent edge.**
-> Crossing par is the expected behaviour of a basket whose own spread is wider
-> than its distance to par, which describes every one of these.
+> **Below-par excursions are a liquidity artifact, not a mispricing signal.**
+> When a basket crosses par, the mechanism is a narrowing spread converging on a
+> nearly unchanged fair value — which cannot create value, only reveal where the
+> market already was.
+
+Said the other way: a verified partition printing below par is drift noise, not
+emergent edge. Crossing par is the expected behaviour of a basket whose own
+spread is wider than its distance to par, which describes every one of these.
+
+### What this closes
+
+The last standing objection to the negative result was that a two-snapshot study
+could miss edge that only appears dynamically — that the exchange might be
+efficient in a photograph and inefficient in motion, and that the whole
+investigation had simply never looked.
+
+**It doesn't, and now the dynamics have been measured rather than assumed.** The
+below-par crossings that a dynamic study was supposed to catch are exactly the
+events observed here, and the mechanism generating them is structurally
+incapable of producing edge:
+
+- Spread compression moves Σask toward par **without moving fair value**. The
+  half-width the ask carries above the midpoint shrinks; the midpoint stays
+  roughly where it was. Nothing is created, only revealed.
+- The magnitude available from the mechanism is bounded by the basket's own
+  width, which is bounded below by `N × tick`. That is the same quantity
+  Finding 1 identified as the binding constraint. A dynamic edge would have to
+  come from somewhere other than the spread, and the spread is what moved.
+- The direction is unhelpful too. Compression is convergence: it narrows the
+  window in which a stale quote could be picked off, rather than widening it.
+
+So the still photograph and the motion agree, and they agree for the same
+structural reason rather than by coincidence. That is the strongest form the
+negative result takes: **the objection was tested on its own terms and the
+mechanism it hoped for turns out to be the mechanism that forecloses it.**
 
 Two consequences for the monitor, both already implemented:
 

@@ -164,13 +164,34 @@ function renderSuppressed(t, p) {
   const d = t.detail || {};
   if (d.suppressed_now === undefined) return "";
   const w = (p.below_par || {}).window;
-  const bands = (d.band_states || []).join("/");
   const windowText = w && w.count !== undefined
     ? `${w.count} suppressed in the last ${w.window_days}d`
     : NO_DATA("suppression ledger not yet written");
-  return `<div class="vals dim">${d.suppressed_now} suppressed now ·
-    ${windowText} · band ${bands === "KNOWN" ? "<b>known</b>"
-      : `<span class="warn">${esc(bands)}</span> (needs more observations)`}</div>`;
+  return `<div class="vals dim" title="${esc(SUPPRESSED_TOOLTIP)}">
+    ${d.suppressed_now} suppressed now · ${windowText}</div>
+    ${renderBandMaturation(p)}`;
+}
+
+/* Cold-start progress, shown rather than implied. A band under the threshold is
+   not a narrow band, it is an absent one, and the count against the threshold
+   is the only honest way to say how far off it is. */
+function renderBandMaturation(p) {
+  const bands = p.bands;
+  if (!bands || !Object.keys(bands).length) {
+    return `<div class="vals dim">bands ${NO_DATA("no series history recorded yet")}</div>`;
+  }
+  const chips = Object.entries(bands).map(([name, b]) => {
+    const established = b.state === "KNOWN";
+    /* An observation is a sweep. Rows and events are shown in the tooltip so
+       breadth cannot be mistaken for time: eleven contracts seen once is one
+       observation, not eleven. */
+    return `<span class="chip ${established ? "good" : "warn"}"
+      title="${esc(name)}: ${b.observations} sweep(s), ${b.rows} row(s) across ${b.events} contract(s)${
+        established ? " — band established" : ` — needs ${b.needs} more sweep(s)`}">
+      ${esc(name)} ${b.observations}/${b.threshold}${established ? " ✓" : ""}</span>`;
+  }).join("");
+  return `<div class="vals dim">band maturation
+    <span class="dim">(sweeps, not rows)</span> ${chips}</div>`;
 }
 
 /* ------------------------------------------------------------ tripwire --- */
@@ -323,14 +344,17 @@ function renderHealth(p) {
   rows.push(`<div class="kv"><span class="k">Last sweep duration</span>
     <span class="v num">${sweep.last_duration_seconds === null || sweep.last_duration_seconds === undefined
       ? NO_DATA("no sweep has completed") : sweep.last_duration_seconds.toFixed(0) + "s"}</span></div>`);
-  rows.push(`<div class="kv"><span class="k">Achieved full-sweep interval
-      <br><span class="dim">exchange-wide stats; throttled, time constant is days</span></span>
-    <span class="v num">${sweep.achieved_interval_seconds === null || sweep.achieved_interval_seconds === undefined
-      ? NO_DATA("needs two sweeps to measure") : Math.round(sweep.achieved_interval_seconds) + "s"}</span></div>`);
-  rows.push(`<div class="kv"><span class="k">Achieved tracked-subset interval
-      <br><span class="dim">fee-free series the findings rest on</span></span>
-    <span class="v num">${p.tracked_poll_seconds === null || p.tracked_poll_seconds === undefined
-      ? NO_DATA("tracked loop has not completed a cycle") : p.tracked_poll_seconds.toFixed(1) + "s"}
+  rows.push(cadenceRow("Full sweep cadence",
+    "exchange-wide stats; time constant is days", sweep,
+    "needs two sweeps to measure"));
+  rows.push(cadenceRow("Tracked-subset cadence",
+    "fee-free series the findings rest on", p.tracked_loop || {},
+    "tracked loop has not completed two cycles"));
+  const tl = p.tracked_loop || {};
+  rows.push(`<div class="kv"><span class="k">Tracked cycle duration
+      <br><span class="dim">work per cycle, not the gap between cycles</span></span>
+    <span class="v num">${tl.last_cycle_seconds === null || tl.last_cycle_seconds === undefined
+      ? NO_DATA("tracked loop has not completed a cycle") : tl.last_cycle_seconds.toFixed(1) + "s"}
       ${p.tracked_age_seconds !== null && p.tracked_age_seconds !== undefined
         ? `<span class="dim">· ${age(p.tracked_age_seconds)} ago</span>` : ""}</span></div>`);
   const inv = p.invariant || {};
@@ -343,11 +367,98 @@ function renderHealth(p) {
       : ntfy.configured ? `<span class="good">CONFIGURED</span>`
         : `<span class="warn">NOT CONFIGURED</span>`}
       <br><span class="dim">${ntfy ? esc(ntfy.target) : ""}</span></span></div>`);
-  rows.push(`<div class="kv"><span class="k">Rate-limit responses (429)</span>
-    <span class="v num ${p.rate_limit_hits ? "warn" : "good"}">${num(p.rate_limit_hits ?? 0)}</span></div>`);
+  rows.push(rateLimitRow(p));
+  rows.push(suppressedLedgerRow(p));
   rows.push(`<div class="kv"><span class="k">Uptime</span>
-    <span class="v num">${age(p.uptime_seconds) ?? NO_DATA("")}</span></div>`);
+    <span class="v num">${age(p.uptime_seconds) ?? NO_DATA("scanner has not started")}</span></div>`);
+  rows.push(rssRow(p));
   el.innerHTML = rows.join("");
+}
+
+/* Achieved against configured, separately labelled. Drift between them is the
+   early signal of throttling or backpressure, so it is shown as its own number
+   rather than left for the reader to subtract. */
+function cadenceRow(label, note, block, whyNoData) {
+  const achieved = block.achieved_interval_seconds;
+  const configured = block.configured_interval_seconds;
+  if (achieved === null || achieved === undefined) {
+    return `<div class="kv"><span class="k">${esc(label)}
+      <br><span class="dim">${esc(note)}</span></span>
+      <span class="v">${NO_DATA(whyNoData)}</span></div>`;
+  }
+  const drift = block.drift_seconds;
+  const hasDrift = drift !== null && drift !== undefined;
+  /* 10% of the configured interval: beyond that the loop is not keeping the
+     cadence it was given. Below it, scheduling jitter. */
+  const off = hasDrift && configured ? Math.abs(drift) > configured * 0.1 : false;
+  return `<div class="kv"><span class="k">${esc(label)}
+      <br><span class="dim">${esc(note)}</span></span>
+    <span class="v num">${Math.round(achieved)}s achieved
+      <br><span class="dim">${configured === null || configured === undefined
+        ? NO_DATA("configured interval not published")
+        : Math.round(configured) + "s configured"}
+        ${hasDrift ? `· <span class="${off ? "warn" : "dim"}">${drift >= 0 ? "+" : ""}${Math.round(drift)}s drift</span>` : ""}
+        ${block.samples ? `· ${num(block.samples)} samples` : ""}</span></span></div>`;
+}
+
+function rateLimitRow(p) {
+  const rl = p.rate_limit;
+  if (!rl) {
+    return `<div class="kv"><span class="k">Rate-limit responses (429)</span>
+      <span class="v">${NO_DATA("scanner has not reported rate-limit state")}</span></div>`;
+  }
+  const partial = rl.timestamps_retained < rl.lifetime;
+  return `<div class="kv"><span class="k">Rate-limit responses (429)
+      <br><span class="dim">any 429 is a health event, not routine</span></span>
+    <span class="v num ${rl.lifetime ? "warn" : "good"}">${num(rl.lifetime)} lifetime
+      <br><span class="dim">${num(rl.last_24h)} in the last 24h${
+        partial ? ` · <span class="warn">only ${num(rl.timestamps_retained)} timestamps retained</span>` : ""}</span></span></div>`;
+}
+
+/* Flat is expected. Accumulating means the $25 floor is masking a real change —
+   that is a read-the-ledger event, not a raise-the-floor event. */
+const SUPPRESSED_TOOLTIP =
+  "Flat is expected. Accumulating means the $25 floor is masking a real change " +
+  "— that is a read-the-ledger event, not a raise-the-floor event.";
+
+function suppressedLedgerRow(p) {
+  const w = (p.below_par || {}).window;
+  if (!w || w.daily === null || w.daily === undefined) {
+    return `<div class="kv"><span class="k">Suppressed detections</span>
+      <span class="v">${NO_DATA("suppression ledger not yet written")}</span></div>`;
+  }
+  return `<div class="kv" title="${esc(SUPPRESSED_TOOLTIP)}">
+    <span class="k">Suppressed detections
+      <br><span class="dim">rolling ${num(w.window_days)}d · flat is expected</span></span>
+    <span class="v num">${num(w.count)}
+      <br>${sparkline(w.daily)}
+      <br><span class="dim">${w.max_dollar_value === null
+        ? "no capacity×edge recorded"
+        : `max $${esc(w.max_dollar_value)} · median $${esc(w.median_dollar_value)}`}</span></span></div>`;
+}
+
+/* Days before the ledger existed are drawn as gaps, not as zeros. A sparkline
+   that renders "not observed" and "observed nothing" identically is asserting
+   an observation it never made. */
+function sparkline(daily) {
+  const peak = Math.max(1, ...daily.map((d) => d.count));
+  const bars = daily.map((d) => {
+    if (!d.observed) return `<i class="unobserved" title="${esc(d.day)}: before the ledger existed"></i>`;
+    const h = d.count === 0 ? 2 : Math.round((d.count / peak) * 100);
+    return `<i style="height:${h}%" class="${d.count ? "" : "zero"}" title="${esc(d.day)}: ${d.count}"></i>`;
+  }).join("");
+  return `<span class="spark" aria-label="suppressed detections per day">${bars}</span>`;
+}
+
+function rssRow(p) {
+  const proc = p.process || {};
+  if (proc.rss_mb === null || proc.rss_mb === undefined) {
+    return `<div class="kv"><span class="k">Resident memory</span>
+      <span class="v">${NO_DATA("RSS is not readable on this platform")}</span></div>`;
+  }
+  return `<div class="kv"><span class="k">Resident memory
+      <br><span class="dim">growth here precedes the box dying</span></span>
+    <span class="v num">${num(proc.rss_mb, 1)} MB</span></div>`;
 }
 
 /* ----------------------------------------------------------- reference --- */

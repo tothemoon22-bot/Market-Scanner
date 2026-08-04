@@ -108,6 +108,17 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
             bands = history.bands()
             state.bands = {k: v.as_dict() for k, v in sorted(bands.items())}
 
+            # Date each UNKNOWN -> KNOWN crossing once, in the ledger rather
+            # than in memory, so a restart does not re-announce every band.
+            for event in history.record_band_transitions(bands):
+                state.log(
+                    "band",
+                    f"{event['series']} band established after "
+                    f"{event['observations']} observations: "
+                    f"{event['min_cost_cents']}c to {event['max_cost_cents']}c",
+                    series=event["series"],
+                )
+
             below = alerts_mod.classify_below_par(baseline, computed, bands)
             history.record_suppressed(below.suppressed)
             state.below_par = {
@@ -121,9 +132,12 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
 
             hits = collect.rate_limit_hits
             if hits > state.rate_limit_hits:
+                fresh = hits - state.rate_limit_hits
+                for _ in range(fresh):
+                    state.rate_limit_at.append(now())
                 state.log(
                     "rate-limit",
-                    f"exchange returned 429 {hits - state.rate_limit_hits} time(s) during this "
+                    f"exchange returned 429 {fresh} time(s) during this "
                     "sweep; backed off and retried",
                 )
                 state.rate_limit_hits = hits
@@ -171,6 +185,39 @@ async def _push(state: ScannerState, fired: list) -> None:
         state.log("error", f"ntfy push failed: {type(exc).__name__}")
 
 
+def heartbeat_summary(state: ScannerState) -> str:
+    """The monthly payload: proof of life, achieved cadence, and the ledger review.
+
+    The suppressed-ledger review rides here rather than pushing on its own. It
+    is a reporting job, and a job that reports monthly by raising its own
+    notification is a job that gets muted.
+    """
+    snap = state.snapshot()
+    sweep, tracked = snap["sweep"], snap["tracked_loop"]
+    rl, proc = snap["rate_limit"], snap["process"]
+
+    def cadence(label: str, block: dict) -> str:
+        achieved = block["achieved_interval_seconds"]
+        configured = block["configured_interval_seconds"]
+        if achieved is None or configured is None:
+            return f"{label}: not yet measured"
+        return (
+            f"{label}: {achieved:.0f}s achieved vs {configured:.0f}s configured "
+            f"({block['drift_seconds']:+.0f}s over {block['samples']} samples)"
+        )
+
+    lines = [
+        f"{state.sweep_count} sweeps, uptime {(now() - state.started_at).days}d",
+        cadence("full sweep", sweep),
+        cadence("tracked subset", tracked),
+        f"429s: {rl['lifetime']} lifetime, {rl['last_24h']} in the last 24h",
+        f"rss: {proc['rss_mb']} MB" if proc["rss_mb"] is not None else "rss: not readable here",
+        "",
+        history.render_review(history.review()),
+    ]
+    return "\n".join(lines)
+
+
 async def heartbeat_loop(state: ScannerState) -> None:
     """Monthly, low priority, distinct tag. A silent monitor must still prove
     it is alive, or its silence stops being evidence of anything."""
@@ -180,16 +227,10 @@ async def heartbeat_loop(state: ScannerState) -> None:
         if not cfg.configured:
             continue
         try:
-            summary = (
-                f"{state.sweep_count} sweeps, uptime "
-                f"{(now() - state.started_at).days}d, "
-                f"{(state.below_par or {}).get('window', {}).get('count', 0)} suppressed "
-                "detections in the rolling window."
-            )
             async with httpx.AsyncClient() as client:
-                await notify.push_heartbeat(client, cfg, summary)
+                await notify.push_heartbeat(client, cfg, heartbeat_summary(state))
             state.source("ntfy").ok()
-            state.log("push", "monthly heartbeat sent")
+            state.log("push", "monthly heartbeat sent, with suppressed-ledger review")
         except Exception as exc:  # noqa: BLE001
             state.source("ntfy").failed(f"{type(exc).__name__}: {exc}")
 
@@ -224,13 +265,20 @@ def _fee_changes() -> dict[str, Any]:
 async def tracked_loop(state: ScannerState) -> None:
     """Poll the markets the findings actually rest on, far faster than the sweep."""
     source = state.source("kalshi_tracked")
+    last_started: float | None = None
     async with httpx.AsyncClient(headers={"Accept": "application/json"}) as client:
         while True:
             started = time.monotonic()
             series = tracked_series(state)
             if not series:
+                # Not a cycle: no interval is recorded for a tick that had
+                # nothing to poll, or the achieved interval would read healthy
+                # while the loop was doing nothing.
                 await asyncio.sleep(TRACKED_INTERVAL)
                 continue
+            if last_started is not None:
+                state.tracked_intervals.append(started - last_started)
+            last_started = started
             try:
                 rows: list[dict[str, Any]] = []
                 meta = {
@@ -349,6 +397,10 @@ async def reference_loop(state: ScannerState) -> None:
 
 
 async def run(state: ScannerState, baseline: dict) -> None:
+    # Publish what the loops were told to do, so the panel can show achieved
+    # against configured rather than achieved alone.
+    state.configured_sweep_interval = FULL_SWEEP_INTERVAL
+    state.configured_tracked_interval = TRACKED_INTERVAL
     state.log("start", "scanner starting; read-only, no credentials")
     tasks = [
         asyncio.create_task(full_sweep_loop(state, baseline)),

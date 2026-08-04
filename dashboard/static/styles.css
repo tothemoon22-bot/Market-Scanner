@@ -169,6 +169,45 @@ main { padding: 0.75rem; display: flex; flex-direction: column; gap: 0.75rem; }
   color: var(--ink-soft);
 }
 
+/* --- sparkline ----------------------------------------------------------- */
+/* Bars are the suppressed-detection count per day. An unobserved day is a
+   dashed stub, never a zero-height bar: "we saw none" and "we were not
+   watching" must not render identically. */
+.spark {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 18px;
+  margin: 0.15rem 0;
+}
+.spark i {
+  display: block;
+  width: 3px;
+  min-height: 1px;
+  background: var(--amber);
+  opacity: 0.85;
+}
+.spark i.zero { background: var(--ink-faint); opacity: 0.45; }
+.spark i.unobserved {
+  height: 100%;
+  background: repeating-linear-gradient(
+    0deg, transparent, transparent 2px,
+    var(--nodata) 2px, var(--nodata) 3px);
+  opacity: 0.35;
+}
+
+/* --- band maturation chips ----------------------------------------------- */
+.chip {
+  display: inline-block;
+  padding: 0.02rem 0.28rem;
+  margin: 0.1rem 0.2rem 0.1rem 0;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* --- funnel -------------------------------------------------------------- */
 .stage { padding: 0.35rem 0; border-bottom: 1px solid var(--rule); }
 .stage:last-child { border-bottom: 0; }

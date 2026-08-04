@@ -116,10 +116,64 @@ interpolates, or assumes a distribution.
 ### Suppression applies to the push, never to the record
 
 Every sub-floor detection is written to `data/monitor/suppressed.jsonl` with its
-reason, and surfaced on the trigger board as a rolling 90-day count broken down
-by reason. **A spike in that count is a signal even when no individual detection
-clears the floor** — which is the guard against a threshold quietly hiding a
-real change while the monitor still looks healthy.
+reason, and surfaced on the pipeline-health panel as a rolling 30-day count with
+a per-day sparkline.
+
+**Flat is expected. Accumulating means the $25 floor is masking a real change —
+that is a read-the-ledger event, not a raise-the-floor event.** That sentence is
+also the panel's tooltip, and a test asserts the two do not drift apart. It is
+the guard against a threshold quietly hiding a change while the monitor still
+looks healthy.
+
+The sparkline draws a day before the ledger existed differently from a day on
+which nothing was suppressed. Both are "count 0"; only one is an observation.
+
+### The monthly ledger review
+
+`history.review()` runs with the heartbeat and has **no push of its own** — a
+monthly report that raises its own notification is a report that gets muted. It
+carries:
+
+- count of suppressed detections, by series and by reason
+- any series suppressed more than 4 times in the window, named individually
+- median and max `capacity × edge` among suppressed detections, against the floor
+
+**If the max approaches $25 from below over consecutive months, that is a
+structural change the floor is hiding.** The review surfaces it. It does not act
+on it, and nothing in the code path can move the floor — that decision needs a
+human reading the ledger.
+
+### Band maturation
+
+The trigger board shows each series' observation count against the
+8-observation threshold and whether its band is established. When a series
+crosses from `UNKNOWN` into established, the transition is written to
+`data/monitor/band_events.jsonl` so it is dated in the record.
+
+Previous state is read from that ledger rather than from process memory, on
+purpose: a transition detector whose "previously seen" set resets on restart
+re-announces every band it has ever established, every time the box reboots.
+
+**An observation is a sweep, not a ledger row.** The first live run of the
+instrumentation caught this: `record()` writes one row per partition per sweep,
+KXGDPYEAR lists eleven years, and the band therefore reported *11 observations,
+KNOWN, 90¢–118¢ after a single sweep*. The "range" was a cross-section of eleven
+different contracts at one instant, not one contract over eleven moments. The
+count is now distinct capture times, and the panel shows sweeps, rows and
+contracts separately so breadth cannot be read as time.
+
+### Flagged, not changed: bands pool events within a series
+
+A band's range covers every event in the series, so `KXGDPYEAR-28` and
+`KXGDPYEAR-36` share one band despite being different contracts with genuinely
+different fair values. The band is consequently wider than it should be.
+
+This is reported rather than fixed because it is a spec change, not a bug:
+re-keying bands per event changes what the third alert route means. It is also
+the safe direction — `is_outside` can only ever *promote* a detection to "new",
+never demote one, so a too-wide band under-detects novelty and cannot
+manufacture a suppression. **Decide the granularity deliberately; do not let it
+drift.**
 
 ## What it cannot see
 

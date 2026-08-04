@@ -49,8 +49,35 @@ that stays quiet is a scanner on its way to a block.
 
 ## Hosting
 
-A single always-on instance is enough — a $5/mo Lightsail box or equivalent. One
-process serves both the scanner and the dashboard.
+A single always-on instance is enough. One process serves both the scanner and
+the dashboard.
+
+### Sizing — measured, and it is not a 512 MB box
+
+| | RSS |
+| --- | --- |
+| At rest, before the first sweep | **93 MB** |
+| During and after a full sweep | **576 MB** |
+| Held flat for the following 7 minutes, tracked loop running | 576 MB |
+
+The full sweep accumulates every open market — ~77,000 objects — in a list, then
+derives a second list of rows from it. That peak is the allocation, and Python
+does not return it to the OS afterwards, so 576 MB is the **steady state**, not a
+spike to ride out.
+
+**Provision at least 2 GB.** The $5/mo tier this document previously named is
+1 GB, which leaves no headroom for the hourly re-allocation; a 512 MB instance
+cannot run this at all. Watch the resident-memory row on the health panel — the
+figures above are what a healthy process looks like, so growth beyond them is
+the signal.
+
+It did not leak across the observed window. That is a 7-minute observation
+covering one sweep, not the 24-hour gate, and only the gate settles it.
+
+If 2 GB is unattractive, the fix is to stream the sweep — page in, derive rows,
+discard the raw page — rather than to accumulate and then map. That is a
+rewrite of `monitor/collect.collect`, not a tuning knob, and it is **flagged,
+not done**.
 
 ```ini
 # /etc/systemd/system/kalshi-scanner.service
