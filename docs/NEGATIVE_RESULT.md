@@ -417,14 +417,32 @@ scanning a corpus that includes itself, is the degenerate case of the same
 error. Fixed by stripping comments before scanning and narrowing the patterns —
 after which the guard immediately caught a real regression it had been blind to.
 
-**4. And the inversion, which is the same insight paying out.** `bid(YES) +
+**4. A maturation check that measured breadth and reported it as time.** The
+monitor's per-series bands require eight observations before they claim to
+describe a range. The history ledger writes one row per partition per sweep, and
+`KXGDPYEAR` lists eleven years — so the *first* sweep wrote eleven rows, the
+band counted rows, and it declared itself established with a "range" of
+90¢–118¢ that was a cross-section of eleven different contracts at one instant
+rather than one contract over eleven moments. The cold-start guard that existed
+specifically to prevent a band from being asserted too early was the thing
+asserting it. Caught by running the instrument against live data rather than
+fixtures. An observation is now a distinct capture time for a distinct event,
+and the panel shows sweeps, rows and contracts separately so breadth cannot be
+read as time again. Shipped as a permanent fixture in the false-positive suite.
+
+**5. And the inversion, which is the same insight paying out.** `bid(YES) +
 bid(NO) > 100¢` is impossible in a correctly reconstructed book. That makes it
 worthless as an opportunity detector — and therefore *valuable* as a continuous
 correctness check on our own ingest: observing it means our book is wrong, not
 that the market is. See the venue notes. That reading is only available once you
 have asked what a check's own failure looks like.
 
-The common structure in all four: **the check drew its standard of correctness
+Two of the five are inside the monitor's own correctness checks, which is the
+uncomfortable part: the code written specifically to stop the project fooling
+itself is the code most prone to it, because it is written against the same
+mental model as the thing it guards.
+
+The common structure in all five: **the check drew its standard of correctness
 from the same source as the thing it was checking.** The defence is to source
 the standard independently — the grid from the quoting convention rather than
 from the observed joins, the clock from the client rather than from the payload,

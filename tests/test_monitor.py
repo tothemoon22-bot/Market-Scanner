@@ -90,6 +90,28 @@ GDP_PARTITION = [
     {"strike_type": "greater", "floor_strike": "0.9", "yes_sub_title": "Above 0.9%"},
 ]
 
+# --------------------------------------------------------------------------
+# Fixture 6: breadth counted as time. Unlike the five above, this false
+# positive was produced by the *instrument*, not by the exchange -- the band
+# maturation check reported how many contracts it had seen as how long it had
+# been watching. KXGDPYEAR lists eleven years, so one sweep wrote eleven ledger
+# rows and the band declared itself established with a "range" that was a
+# cross-section of eleven different contracts at a single instant.
+#
+# One capture time, N events, must be one observation. Never N.
+# --------------------------------------------------------------------------
+SINGLE_SWEEP_ELEVEN_EVENTS = [
+    {
+        "at": "2026-08-04T16:22:01+00:00",
+        "event": f"KXGDPYEAR-{year}",
+        "series": "KXGDPYEAR",
+        "cost_cents": str(90 + year - 26),
+        "capacity_contracts": "15",
+        "below_par": year < 30,
+    }
+    for year in range(26, 37)
+]
+
 
 @pytest.mark.parametrize(
     "name,legs",
@@ -103,6 +125,51 @@ def test_partition_resemblance_is_rejected(name, legs):
     result = verify_partition(legs)
     assert not result, f"{name} must not verify as a partition"
     assert result.reason
+
+
+def test_one_capture_time_is_one_observation_however_many_events(tmp_path):
+    """Fixture 6. Breadth is not time, and it must never be counted as time.
+
+    Fails if anyone reintroduces row counting: eleven events captured once
+    would report eleven observations and establish a band from a single sweep.
+    """
+    from scanner import history
+
+    ledger = tmp_path / "series_history.jsonl"
+    ledger.write_text(
+        "\n".join(json.dumps(row) for row in SINGLE_SWEEP_ELEVEN_EVENTS) + "\n"
+    )
+    bands = history.bands(path=ledger)
+
+    assert len(bands) == len(SINGLE_SWEEP_ELEVEN_EVENTS), "one band per event, not per series"
+    for event, band in bands.items():
+        assert band.observations == 1, (
+            f"{event} reports {band.observations} observations from a single capture time"
+        )
+        assert band.rows == 1
+        assert band.events == 1, "a band describes one structure, never several"
+        assert not band.known and band.state == "UNKNOWN"
+        assert band.is_outside(D("1")) is False, "an UNKNOWN band claims nothing"
+
+    # The series key that pooled them is gone; nothing answers to it.
+    assert "KXGDPYEAR" not in bands
+
+
+def test_observations_advance_one_per_sweep_of_the_same_event(tmp_path):
+    """The other half of fixture 6: real time does accumulate."""
+    from scanner import history
+
+    ledger = tmp_path / "series_history.jsonl"
+    sweeps = history.MIN_OBSERVATIONS_FOR_BAND
+    rows = [
+        {**SINGLE_SWEEP_ELEVEN_EVENTS[2], "at": f"2026-08-{4 + i:02d}T00:00:00+00:00"}
+        for i in range(sweeps)
+    ]
+    ledger.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+
+    band = history.bands(path=ledger)["KXGDPYEAR-28"]
+    assert band.observations == sweeps and band.rows == sweeps
+    assert band.known and band.state == "KNOWN"
 
 
 def test_real_partitions_are_accepted_at_their_own_granularity():

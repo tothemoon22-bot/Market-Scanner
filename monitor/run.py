@@ -17,8 +17,8 @@ from pathlib import Path
 
 import httpx
 
+from monitor import aggregate, collect
 from monitor import alerts as alerts_mod
-from monitor import collect, metrics
 
 BASELINE = Path("monitor/baseline.json")
 ARCHIVE = Path("data/monitor")
@@ -68,20 +68,21 @@ def main() -> int:
     parser.add_argument("--no-archive", action="store_true")
     args = parser.parse_args()
 
+    # Both paths stream: nothing that scales with market count is materialised,
+    # here or in the sweep. See monitor/aggregate.py.
     if args.source:
-        rows = collect.read_snapshot(args.source)
+        current = aggregate.SweepAggregate().fold(collect.iter_snapshot(args.source)).result()
         fee_changes = None
         snapshot_dir = args.source
     else:
-        rows_typed, manifest = collect.collect(CATEGORIES)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         snapshot_dir = ARCHIVE / stamp
-        if not args.no_archive:
-            collect.write_snapshot(rows_typed, manifest, snapshot_dir)
-        rows = collect.read_snapshot(snapshot_dir) if not args.no_archive else []
+        agg, _manifest = collect.sweep(
+            CATEGORIES, archive_to=None if args.no_archive else snapshot_dir
+        )
+        current = agg.result()
+        del agg
         fee_changes = fetch_fee_changes()
-
-    current = metrics.compute(rows)
 
     if args.write_baseline:
         BASELINE.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")

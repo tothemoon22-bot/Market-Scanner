@@ -45,30 +45,35 @@ REPEAT_SUPPRESSION_THRESHOLD = 4
 
 @dataclass(frozen=True)
 class Band:
-    """One series' observed cost range, and how much time it actually covers.
+    """One *event's* observed cost range, and how much time it actually covers.
 
     ``observations`` counts distinct sweeps; ``rows`` counts ledger lines and
     ``events`` the contracts they came from. Keeping all three visible is what
     makes the difference between "seen eleven times" and "eleven contracts seen
     once" legible on the panel instead of collapsed into one flattering number.
+    Since re-keying, ``events`` is 1 by construction -- which is the visible
+    proof that the pooling is gone.
 
-    **Known limitation, flagged rather than changed.** The range pools every
-    event in the series, so KXGDPYEAR-28 and KXGDPYEAR-36 share one band even
-    though they are different contracts with genuinely different fair values.
-    That makes the band wider than it should be, and a wider band is *less*
-    sensitive: ``is_outside`` can only ever promote a detection to "new", never
-    demote one, so this under-detects novelty rather than manufacturing
-    suppression. Re-keying bands per event would fix it and is a spec change,
-    not a bug fix -- see monitor/README.md.
+    **Bands are keyed per event, not per series.** They were series-keyed, so
+    KXGDPYEAR-28 and KXGDPYEAR-36 shared one band despite being different
+    contracts with genuinely different fair values -- the same error as counting
+    ledger rows as observations, one level up: a band is meant to describe one
+    structure's behaviour over time, and a series key made it describe several
+    structures at once. Re-keyed 2026-08-05; see ``record_rekey``.
     """
 
-    series: str
+    event: str
     observations: int
     min_cost_cents: D | None
     max_cost_cents: D | None
     crossings: int
     rows: int = 0
     events: int = 0
+
+    @property
+    def series(self) -> str:
+        """The series this event belongs to. Grouping label only -- never a key."""
+        return series_of(self.event)
 
     @property
     def known(self) -> bool:
@@ -91,6 +96,7 @@ class Band:
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "event": self.event,
             "series": self.series,
             "observations": self.observations,
             "state": self.state,
@@ -142,44 +148,45 @@ def load(path: Path = HISTORY_PATH) -> list[dict[str, Any]]:
 
 
 def bands(path: Path = HISTORY_PATH) -> dict[str, Band]:
-    """One band per series, from whatever history exists.
+    """One band per event, from whatever history exists.
 
-    **An observation is a sweep, not a row.** ``record()`` writes one row per
-    partition per sweep, so a series with eleven listed years produced eleven
-    rows the first time it was ever seen -- and counting rows declared its band
-    established, with a "range" that was a cross-section of eleven different
-    contracts at one instant rather than one contract over eleven moments.
-    Caught on the first live run: KXGDPYEAR reported 11 observations, KNOWN,
-    90c-118c, after a single sweep.
+    **An observation is a distinct capture time for a distinct event.** Both
+    halves were wrong once, in the same way:
 
-    The count is therefore distinct capture times. Eight of those is eight
-    sweeps, which is what :data:`MIN_OBSERVATIONS_FOR_BAND` has always claimed
-    to mean.
+    ``record()`` writes one row per partition per sweep, so KXGDPYEAR's eleven
+    listed years produced eleven rows the first time the series was ever seen.
+    Counting *rows* declared the band established after one sweep, with a
+    "range" that was a cross-section of eleven contracts at one instant. And
+    keying by *series* pooled those eleven contracts into a single band, so
+    KXGDPYEAR-28 and KXGDPYEAR-36 were described by one range despite having
+    genuinely different fair values.
+
+    Breadth is not time, and several structures are not one structure. The key
+    is the event and the count is distinct capture times, so eight observations
+    is eight sweeps of one contract -- which is what
+    :data:`MIN_OBSERVATIONS_FOR_BAND` has always claimed to mean.
     """
     rows = load(path)
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        grouped.setdefault(row["series"], []).append(row)
+        grouped.setdefault(row["event"], []).append(row)
 
     out: dict[str, Band] = {}
-    for series, observations in grouped.items():
+    for event, observations in grouped.items():
         costs = [D(o["cost_cents"]) for o in observations]
-        # A crossing is a change in which side of par the series sits on,
-        # between consecutive observations of the same event.
-        crossings = 0
-        by_event: dict[str, list[dict[str, Any]]] = {}
-        for o in observations:
-            by_event.setdefault(o["event"], []).append(o)
-        for series_obs in by_event.values():
-            ordered = sorted(series_obs, key=lambda o: o["at"])
-            for a, b in zip(ordered, ordered[1:], strict=False):
-                if a["below_par"] != b["below_par"]:
-                    crossings += 1
-        out[series] = Band(
-            series=series,
+        # A crossing is a change in which side of par this event sits on,
+        # between consecutive observations of it.
+        ordered = sorted(observations, key=lambda o: o["at"])
+        crossings = sum(
+            1
+            for a, b in zip(ordered, ordered[1:], strict=False)
+            if a["below_par"] != b["below_par"]
+        )
+        out[event] = Band(
+            event=event,
             observations=len({o["at"] for o in observations}),
             rows=len(observations),
-            events=len(by_event),
+            events=1,
             min_cost_cents=min(costs),
             max_cost_cents=max(costs),
             crossings=crossings,
@@ -353,42 +360,89 @@ def render_review(r: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def established_series(path: Path = BAND_EVENTS_PATH) -> set[str]:
-    """Series already recorded as having crossed into an established band.
+#: Ledger entry kinds. Everything without one predates the per-event re-key.
+KIND_ESTABLISHED = "established"
+KIND_REKEY = "rekey"
+
+
+def _band_ledger(path: Path = BAND_EVENTS_PATH) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def established_keys(path: Path = BAND_EVENTS_PATH) -> set[str]:
+    """Events already recorded as having crossed into an established band.
 
     Read from the ledger rather than from in-process memory on purpose: a
     transition detector whose "previous state" resets on restart re-fires every
     band it has ever seen, every time the box reboots.
+
+    Legacy series-keyed entries are deliberately *not* matched. They described a
+    different object, and silently treating a series row as an event row would
+    suppress the first real transition for one arbitrary event per series.
     """
-    if not path.exists():
-        return set()
     return {
-        json.loads(line)["series"]
-        for line in path.read_text().splitlines()
-        if line.strip()
+        row["event"]
+        for row in _band_ledger(path)
+        if row.get("kind") == KIND_ESTABLISHED and "event" in row
     }
+
+
+def record_rekey(path: Path = BAND_EVENTS_PATH, note: str = "") -> dict[str, Any] | None:
+    """Write the one-time marker that band history was re-keyed, not lost.
+
+    Only written where there was history to reset. An empty ledger has nothing
+    to say, and a marker there would imply a restart that never happened.
+    """
+    ledger = _band_ledger(path)
+    if not ledger or any(row.get("kind") == KIND_REKEY for row in ledger):
+        return None
+    legacy = [row for row in ledger if row.get("kind") is None]
+    if not legacy:
+        return None
+    entry = {
+        "at": datetime.now(UTC).isoformat(),
+        "kind": KIND_REKEY,
+        "from": "series",
+        "to": "event",
+        "superseded": sorted({row.get("series", "") for row in legacy}),
+        "note": note
+        or (
+            "Bands re-keyed from series to event. A series-keyed band described "
+            "several contracts at once; observation counts restart per event. "
+            "The entries above are superseded, not deleted."
+        ),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as fh:
+        fh.write(json.dumps(entry) + "\n")
+    return entry
 
 
 def record_band_transitions(
     band_map: dict[str, Band], path: Path = BAND_EVENTS_PATH
 ) -> list[dict[str, Any]]:
     """Date the UNKNOWN -> KNOWN crossings, once each. Returns the new ones."""
-    already = established_series(path)
-    fresh = [b for name, b in sorted(band_map.items()) if b.known and name not in already]
+    record_rekey(path)
+    already = established_keys(path)
+    fresh = [b for key, b in sorted(band_map.items()) if b.known and key not in already]
     if not fresh:
         return []
     path.parent.mkdir(parents=True, exist_ok=True)
     at = datetime.now(UTC).isoformat()
-    events = []
+    entries = []
     with path.open("a") as fh:
         for band in fresh:
-            event = {
+            entry = {
                 "at": at,
+                "kind": KIND_ESTABLISHED,
+                "event": band.event,
                 "series": band.series,
                 "observations": band.observations,
                 "min_cost_cents": str(band.min_cost_cents),
                 "max_cost_cents": str(band.max_cost_cents),
             }
-            fh.write(json.dumps(event) + "\n")
-            events.append(event)
-    return events
+            fh.write(json.dumps(entry) + "\n")
+            entries.append(entry)
+    return entries

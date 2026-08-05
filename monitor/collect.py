@@ -16,6 +16,7 @@ import csv
 import gzip
 import json
 import time
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -23,6 +24,7 @@ from pathlib import Path
 
 import httpx
 
+from monitor.aggregate import SweepAggregate
 from monitor.checks import underlying_shape
 
 D = Decimal
@@ -171,13 +173,49 @@ def backfill_series(client: httpx.Client, meta: dict[str, dict], missing: set[st
     return unresolved
 
 
-def collect(categories: list[str]) -> tuple[list[Row], dict]:
-    """One full sweep of every open market. Returns rows plus a manifest."""
-    captured_at = datetime.now(UTC)
+def _resolve_series(
+    client: httpx.Client,
+    series_meta: dict[str, dict],
+    unresolved: set[str],
+    series_ticker: str,
+) -> None:
+    """Backfill one series on first sight, so streaming needs no second pass.
+
+    The materialised version fetched every page, collected the missing series,
+    backfilled, then mapped. Streaming cannot map after the fact, so the
+    backfill is interleaved. Each missing series is still fetched exactly once
+    and the resulting metadata is identical; only the request order changes.
+    """
+    if series_ticker in series_meta or series_ticker in unresolved or not series_ticker:
+        return
+    try:
+        s = _get(client, f"{BASE}/series/{series_ticker}").json()["series"]
+    except (httpx.HTTPError, KeyError):
+        unresolved.add(series_ticker)
+        return
+    series_meta[series_ticker] = {
+        "category": s.get("category", ""),
+        "fee_type": s.get("fee_type", ""),
+        "fee_multiplier": str(s.get("fee_multiplier", "")),
+    }
+
+
+def stream_markets(
+    categories: list[str], meta_out: dict | None = None
+) -> Iterator[Row]:
+    """Yield every open market as a Row, holding no page beyond its own loop.
+
+    **Nothing that scales with market count is retained here.** The caller folds
+    each row into bounded aggregates; the raw page is released as soon as its
+    markets have been converted. `series_meta` is bounded by series count.
+
+    Series counts land in ``meta_out`` if given -- passed in rather than stashed
+    on the function, because the scanner runs sweeps on a worker thread and
+    module-level state would be shared across them.
+    """
     with httpx.Client(timeout=60.0, headers={"Accept": "application/json"}) as client:
         series_meta = fetch_series(client, categories)
-
-        markets: list[dict] = []
+        unresolved: set[str] = set()
         cursor: str | None = None
         while True:
             params: dict[str, str | int] = {
@@ -189,38 +227,101 @@ def collect(categories: list[str]) -> tuple[list[Row], dict]:
                 params["cursor"] = cursor
             payload = _get(client, f"{BASE}/markets", params).json()
             batch = payload.get("markets") or []
-            markets.extend(batch)
+            for market in batch:
+                _resolve_series(
+                    client,
+                    series_meta,
+                    unresolved,
+                    market.get("event_ticker", "").split("-")[0],
+                )
+                yield to_row(market, series_meta)
             cursor = payload.get("cursor") or None
-            if not cursor or not batch:
+            del payload, batch
+            if not cursor:
                 break
+        if meta_out is not None:
+            meta_out["n_series"] = len(series_meta)
+            meta_out["unresolved_series"] = sorted(unresolved)
 
-        missing = {
-            m.get("event_ticker", "").split("-")[0]
-            for m in markets
-            if m.get("event_ticker", "").split("-")[0] not in series_meta
-        }
-        unresolved = backfill_series(client, series_meta, missing) if missing else set()
 
-    rows = [to_row(m, series_meta) for m in markets]
+class SnapshotWriter:
+    """Writes rows to the archive as they stream, so none are held to write later."""
+
+    def __init__(self, out_dir: Path) -> None:
+        self.out_dir = out_dir
+        self._fh = None
+        self._writer = None
+        self.n_rows = 0
+
+    def __enter__(self) -> SnapshotWriter:
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        self._fh = gzip.open(self.out_dir / "markets.csv.gz", "wt", newline="")
+        self._writer = csv.DictWriter(self._fh, fieldnames=[f.name for f in fields(Row)])
+        self._writer.writeheader()
+        return self
+
+    def write(self, row: Row) -> None:
+        self._writer.writerow(asdict(row))
+        self.n_rows += 1
+
+    def finish(self, manifest: dict) -> None:
+        (self.out_dir / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True)
+        )
+
+    def __exit__(self, *exc: object) -> None:
+        if self._fh is not None:
+            self._fh.close()
+
+
+def sweep(
+    categories: list[str], archive_to: Path | None = None
+) -> tuple[SweepAggregate, dict]:
+    """One full sweep, folded into bounded aggregates as it arrives.
+
+    Optionally archives every row to ``archive_to`` on the way past, without
+    holding them: the CSV writer consumes each row and drops it.
+    """
+    captured_at = datetime.now(UTC)
+    aggregate = SweepAggregate()
+    meta: dict = {"n_series": 0, "unresolved_series": []}
+    stream = stream_markets(categories, meta)
+
+    if archive_to is None:
+        for row in stream:
+            aggregate.add(row.__dict__)
+        writer = None
+    else:
+        writer = SnapshotWriter(archive_to)
+        with writer:
+            for row in stream:
+                aggregate.add(row.__dict__)
+                writer.write(row)
+
     manifest = {
         "captured_at": captured_at.isoformat(),
-        "n_markets": len(rows),
-        "n_series": len(series_meta),
-        "unresolved_series": sorted(unresolved),
+        "n_markets": aggregate.n_markets,
+        "n_series": meta["n_series"],
+        "unresolved_series": meta["unresolved_series"],
     }
-    return rows, manifest
+    if writer is not None:
+        writer.finish(manifest)
+    return aggregate, manifest
 
 
 def write_snapshot(rows: list[Row], manifest: dict, out_dir: Path) -> None:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    with gzip.open(out_dir / "markets.csv.gz", "wt", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=[f.name for f in fields(Row)])
-        writer.writeheader()
+    """Materialised archive write. Retained for callers that already hold rows."""
+    with SnapshotWriter(out_dir) as writer:
         for row in rows:
-            writer.writerow(asdict(row))
-    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
+            writer.write(row)
+        writer.finish(manifest)
+
+
+def iter_snapshot(path: Path) -> Iterator[dict]:
+    """Stream a stored snapshot, one row at a time."""
+    with gzip.open(path / "markets.csv.gz", "rt") as fh:
+        yield from csv.DictReader(fh)
 
 
 def read_snapshot(path: Path) -> list[dict]:
-    with gzip.open(path / "markets.csv.gz", "rt") as fh:
-        return list(csv.DictReader(fh))
+    return list(iter_snapshot(path))

@@ -50,6 +50,11 @@ def basket_fee_cents(legs: list[dict], contracts: int) -> D:
 
 
 def build(rows: list[dict]) -> list[Stage]:
+    """Reference implementation, over materialised rows.
+
+    Kept as the standard :func:`build_from` is checked against; see
+    ``tests/test_aggregate.py``.
+    """
     live = [r for r in rows if r["two_sided"] == "True"]
 
     candidates: list[list[dict]] = []
@@ -60,7 +65,32 @@ def build(rows: list[dict]) -> list[Stage]:
             continue
         candidates.append(legs)
 
-    verified = [legs for legs in candidates if verify_partition(_as_legs(legs))]
+    return _stages(len(rows), len(live), candidates)
+
+
+def build_from(aggregate) -> list[Stage]:
+    """Same funnel, from the streaming aggregate.
+
+    The candidate predicate is evaluated from per-event counters rather than
+    from the legs, because a funnel candidate need not be a range partition --
+    only the *verified* stage onward needs leg detail, and that is exactly what
+    the aggregate retains.
+    """
+    candidates: list[list[dict]] = []
+    retained = aggregate.candidate_legs()
+    for event, state in sorted(aggregate.events.items()):
+        if state.n_legs < 2 or state.has_rfq or not state.all_two_sided:
+            continue
+        legs = retained.get(event)
+        # No retained legs means the event held a non-range bucket, which
+        # verify_partition rejects; it still counts as a candidate.
+        candidates.append(legs if legs is not None else [])
+
+    return _stages(aggregate.n_markets, aggregate.n_two_sided, candidates)
+
+
+def _stages(n_markets: int, n_live: int, candidates: list[list[dict]]) -> list[Stage]:
+    verified = [legs for legs in candidates if legs and verify_partition(_as_legs(legs))]
 
     with_capacity = [
         legs for legs in verified if min(tradeable_size(leg["ask_size"]) for leg in legs) >= 1
@@ -78,8 +108,8 @@ def build(rows: list[dict]) -> list[Stage]:
                 actionable.append(legs)
 
     return [
-        Stage("scanned", "Markets scanned", len(rows), "markets"),
-        Stage("two_sided", "Two-sided book", len(live), "markets", "both YES and NO bids resting"),
+        Stage("scanned", "Markets scanned", n_markets, "markets"),
+        Stage("two_sided", "Two-sided book", n_live, "markets", "both YES and NO bids resting"),
         Stage(
             "candidates",
             "Candidate baskets",

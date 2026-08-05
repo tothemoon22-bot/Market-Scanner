@@ -25,7 +25,7 @@ from typing import Any
 import httpx
 
 from monitor import alerts as alerts_mod
-from monitor import collect, metrics
+from monitor import collect
 from monitor.checks import tradeable_size
 from scanner import funnel, history, notify, reference, triggers
 from scanner.state import ScannerState, now
@@ -82,10 +82,12 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
             state.sweep_intervals.append(started - last_started)
         last_started = started
         try:
-            rows_typed, manifest = await asyncio.to_thread(collect.collect, collect_categories())
-            rows = [r.__dict__ for r in rows_typed]
+            # Streaming: the sweep folds each page into bounded aggregates and
+            # discards it. Nothing that scales with market count is held, here
+            # or in the aggregate. See monitor/aggregate.py.
+            agg, manifest = await asyncio.to_thread(collect.sweep, collect_categories())
 
-            computed = metrics.compute(rows)
+            computed = agg.result()
             try:
                 fee_changes = await asyncio.to_thread(_fee_changes)
                 computed["fee_changes"] = fee_changes
@@ -97,7 +99,8 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
             state.sweep_count += 1
             state.sweep_seconds = time.monotonic() - started
             state.triggers = [t.__dict__ for t in triggers.evaluate(baseline, computed)]
-            state.funnel = funnel.as_dict(funnel.build(rows))
+            state.funnel = funnel.as_dict(funnel.build_from(agg))
+            del agg  # release the candidate legs before the loop sleeps
             state.partitions = computed["verified_partitions"]["fee_free_detail"]
             state.tripwire = computed["deci_cent_fee_free_tripwire"]
             _record_proximity(state)

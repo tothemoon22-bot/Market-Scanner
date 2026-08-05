@@ -352,7 +352,7 @@ def test_band_is_unknown_until_enough_observations(tmp_path):
     path = tmp_path / "history.jsonl"
     for cost in ("103.00", "98.00"):
         history.record([_partition("KXGDPYEAR-28", cost, "15.00")], path=path)
-    band = history.bands(path=path)["KXGDPYEAR"]
+    band = history.bands(path=path)["KXGDPYEAR-28"]
     assert band.observations == 2
     assert band.state == "UNKNOWN"
     assert not band.known
@@ -361,13 +361,13 @@ def test_band_is_unknown_until_enough_observations(tmp_path):
     assert band.is_outside(D("1.00")) is False
 
 
-def test_band_becomes_known_and_bounds_the_series(tmp_path):
+def test_band_becomes_known_and_bounds_the_event(tmp_path):
     from scanner import history
 
     path = tmp_path / "history.jsonl"
     for cost in ("103", "98", "101", "99", "104", "97", "100.5", "102"):
         history.record([_partition("KXGDPYEAR-28", cost, "15.00")], path=path)
-    band = history.bands(path=path)["KXGDPYEAR"]
+    band = history.bands(path=path)["KXGDPYEAR-28"]
     assert band.state == "KNOWN"
     assert band.crossings > 0, "the fixture crosses par repeatedly"
     assert band.is_outside(D("90")) is True

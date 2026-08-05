@@ -258,13 +258,15 @@ def test_review_rides_the_heartbeat_and_never_pushes_on_its_own():
 # ------------------------------------------------------- band maturation ---
 
 
-def _band(name: str, observations: int) -> history.Band:
+def _band(event: str, observations: int) -> history.Band:
     return history.Band(
-        series=name,
+        event=event,
         observations=observations,
         min_cost_cents=D("95"),
         max_cost_cents=D("105"),
         crossings=1,
+        rows=observations,
+        events=1,
     )
 
 
@@ -275,99 +277,157 @@ def test_band_transition_is_recorded_once_and_survives_a_restart(tmp_path):
     restart cannot re-announce every band the monitor has ever established.
     """
     ledger = tmp_path / "band_events.jsonl"
-    bands = {"KXGDPYEAR": _band("KXGDPYEAR", 8)}
+    bands = {"KXGDPYEAR-28": _band("KXGDPYEAR-28", 8)}
 
     first = history.record_band_transitions(bands, path=ledger)
-    assert [e["series"] for e in first] == ["KXGDPYEAR"]
+    assert [e["event"] for e in first] == ["KXGDPYEAR-28"]
     assert first[0]["observations"] == 8
+    assert first[0]["series"] == "KXGDPYEAR", "series survives as a grouping label"
 
     # Same process, next sweep.
     assert history.record_band_transitions(bands, path=ledger) == []
     # A restart: nothing in memory, everything in the ledger.
-    assert history.established_series(path=ledger) == {"KXGDPYEAR"}
+    assert history.established_keys(path=ledger) == {"KXGDPYEAR-28"}
     assert history.record_band_transitions(bands, path=ledger) == []
     assert len(ledger.read_text().splitlines()) == 1
 
 
+def test_sibling_events_of_one_series_get_their_own_transitions(tmp_path):
+    """The re-key, at the point it changes behaviour.
+
+    Series-keyed, KXGDPYEAR-36 maturing would have been announced -- and then
+    suppressed -- under KXGDPYEAR-28's record.
+    """
+    ledger = tmp_path / "band_events.jsonl"
+    history.record_band_transitions({"KXGDPYEAR-28": _band("KXGDPYEAR-28", 8)}, ledger)
+    fresh = history.record_band_transitions(
+        {"KXGDPYEAR-28": _band("KXGDPYEAR-28", 9), "KXGDPYEAR-36": _band("KXGDPYEAR-36", 8)},
+        ledger,
+    )
+    assert [e["event"] for e in fresh] == ["KXGDPYEAR-36"]
+    assert history.established_keys(path=ledger) == {"KXGDPYEAR-28", "KXGDPYEAR-36"}
+
+
 def test_a_band_below_the_threshold_never_records_a_transition(tmp_path):
     ledger = tmp_path / "band_events.jsonl"
-    assert history.record_band_transitions({"KXGDPYEAR": _band("KXGDPYEAR", 7)}, ledger) == []
+    assert history.record_band_transitions({"KXGDPYEAR-28": _band("KXGDPYEAR-28", 7)}, ledger) == []
     assert not ledger.exists()
     # And crossing it later does record, once.
-    assert history.record_band_transitions({"KXGDPYEAR": _band("KXGDPYEAR", 8)}, ledger)
+    assert history.record_band_transitions({"KXGDPYEAR-28": _band("KXGDPYEAR-28", 8)}, ledger)
 
 
-def test_one_sweep_is_one_observation_however_many_partitions_it_wrote(tmp_path):
-    """The bug the first live run found: a band established by breadth, not time.
+def test_the_rekey_is_written_to_the_record_not_silently_applied(tmp_path):
+    """Observation counts restart per event. The record has to say why."""
+    ledger = tmp_path / "band_events.jsonl"
+    # A legacy, series-keyed entry, as a deployed box would already hold.
+    ledger.write_text(
+        json.dumps(
+            {
+                "at": "2026-08-04T00:00:00+00:00",
+                "series": "KXGDPYEAR",
+                "observations": 11,
+                "min_cost_cents": "90.00",
+                "max_cost_cents": "118.00",
+            }
+        )
+        + "\n"
+    )
 
-    record() writes one row per partition per sweep. KXGDPYEAR lists eleven
-    years, so a single sweep wrote eleven rows and the band declared itself
-    KNOWN with a "range" that was a cross-section of eleven contracts at one
-    instant. Eight observations has to mean eight sweeps.
-    """
-    ledger = tmp_path / "series_history.jsonl"
-    partitions = [
-        {
-            "event": f"KXGDPYEAR-{year}",
-            "cost_cents": str(90 + year - 26),
-            "capacity_contracts": "15",
-            "below_par": year < 30,
-        }
-        for year in range(26, 37)  # eleven listed years, as the exchange lists them
-    ]
-    history.record(partitions, path=ledger)
+    # Legacy rows describe a different object and must not satisfy an event key.
+    assert history.established_keys(path=ledger) == set()
 
-    band = history.bands(path=ledger)["KXGDPYEAR"]
-    assert band.rows == 11, "the ledger still records every partition"
-    assert band.events == 11
-    assert band.observations == 1, "eleven contracts seen once is one observation"
-    assert band.state == "UNKNOWN"
-    assert not band.known
-    assert band.is_outside(D("50")) is False, "an UNKNOWN band claims nothing"
+    marker = history.record_rekey(path=ledger)
+    assert marker["kind"] == history.KIND_REKEY
+    assert marker["from"] == "series" and marker["to"] == "event"
+    assert marker["superseded"] == ["KXGDPYEAR"]
+    assert "superseded, not deleted" in marker["note"]
+
+    # Once only, however many sweeps follow.
+    assert history.record_rekey(path=ledger) is None
+    history.record_band_transitions({"KXGDPYEAR-28": _band("KXGDPYEAR-28", 8)}, ledger)
+    assert sum(1 for line in ledger.read_text().splitlines()
+               if json.loads(line).get("kind") == history.KIND_REKEY) == 1
 
 
-def test_observations_advance_one_per_sweep(tmp_path):
-    """Eight sweeps of two partitions: sixteen rows, eight observations."""
-    ledger = tmp_path / "series_history.jsonl"
-    sweeps = history.MIN_OBSERVATIONS_FOR_BAND
-    with ledger.open("w") as fh:
-        for sweep in range(sweeps):
-            at = f"2026-08-{4 + sweep:02d}T00:00:00+00:00"
-            for event, cost in (("KXGDPYEAR-28", "98"), ("KXGDPYEAR-29", "95")):
-                fh.write(
-                    json.dumps(
-                        {
-                            "at": at,
-                            "event": event,
-                            "series": "KXGDPYEAR",
-                            "cost_cents": cost,
-                            "capacity_contracts": "15",
-                            "below_par": True,
-                        }
-                    )
-                    + "\n"
-                )
+def test_an_empty_ledger_records_no_rekey(tmp_path):
+    """Nothing was reset, so claiming a reset would be the false statement."""
+    ledger = tmp_path / "band_events.jsonl"
+    assert history.record_rekey(path=ledger) is None
+    history.record_band_transitions({"KXGDPYEAR-28": _band("KXGDPYEAR-28", 8)}, ledger)
+    kinds = [json.loads(line)["kind"] for line in ledger.read_text().splitlines()]
+    assert kinds == [history.KIND_ESTABLISHED]
 
-    band = history.bands(path=ledger)["KXGDPYEAR"]
-    assert band.rows == sweeps * 2
-    assert band.observations == sweeps
-    assert band.known and band.state == "KNOWN"
 
-    # One sweep short is not established, however many rows it holds.
-    trimmed = tmp_path / "short.jsonl"
-    trimmed.write_text("\n".join(ledger.read_text().splitlines()[:-2]) + "\n")
-    assert history.bands(path=trimmed)["KXGDPYEAR"].observations == sweeps - 1
-    assert not history.bands(path=trimmed)["KXGDPYEAR"].known
+#: The breadth-counted-as-time fixture lives in the false-positive suite, with
+#: KXDEELRIP-40 and the sports ladder artifacts -- see
+#: tests/test_monitor.py::test_one_capture_time_is_one_observation_however_many_events.
 
 
 def test_band_payload_carries_the_threshold_so_the_ui_need_not_hardcode_it():
-    d = _band("KXGDPYEAR", 3).as_dict()
+    d = _band("KXGDPYEAR-28", 3).as_dict()
     assert d["threshold"] == history.MIN_OBSERVATIONS_FOR_BAND
     assert d["needs"] == history.MIN_OBSERVATIONS_FOR_BAND - 3
     assert d["state"] == "UNKNOWN"
+    assert d["event"] == "KXGDPYEAR-28"
+    assert d["series"] == "KXGDPYEAR", "series survives as a grouping label"
+    assert d["events"] == 1, "a band describes one structure"
     js = APP_JS.read_text()
     assert "b.threshold" in js
     assert not re.search(r"/\s*8\b", js), "the UI must not hardcode the observation threshold"
+
+
+def test_bands_only_ever_promote_a_detection_to_new(tmp_path):
+    """The property the re-key had to preserve: a band adds sensitivity only.
+
+    Checked by running classify_below_par with and without bands over the same
+    input, rather than by reading the branch -- the standard of correctness is
+    the observed behaviour, not the code's own shape.
+    """
+    from monitor.alerts import classify_below_par
+
+    current = {
+        "verified_partitions": {
+            "fee_free_detail": [
+                {"event": "KXGDPYEAR-28", "cost_cents": "98.00", "capacity_contracts": "5000",
+                 "below_par": True, "tradeable": True, "annualized_pct": "0.79"},
+                {"event": "KXGDPYEAR-29", "cost_cents": "95.00", "capacity_contracts": "5000",
+                 "below_par": True, "tradeable": True, "annualized_pct": "1.47"},
+            ]
+        }
+    }
+    baseline = {
+        "verified_partitions": {
+            "fee_free_detail": [
+                {"event": "KXGDPYEAR-29", "cost_cents": "95.00", "below_par": True}
+            ]
+        }
+    }
+
+    without = classify_below_par(baseline, current, None)
+    # A band tight enough that both prints fall outside it.
+    tight = {
+        e: history.Band(event=e, observations=99, min_cost_cents=D("99.5"),
+                        max_cost_cents=D("99.9"), crossings=0, rows=99, events=1)
+        for e in ("KXGDPYEAR-28", "KXGDPYEAR-29")
+    }
+    # A band so wide nothing is ever outside it.
+    wide = {
+        e: history.Band(event=e, observations=99, min_cost_cents=D("0"),
+                        max_cost_cents=D("200"), crossings=0, rows=99, events=1)
+        for e in ("KXGDPYEAR-28", "KXGDPYEAR-29")
+    }
+
+    pushed = {r: {p["event"] for p in classify_below_par(baseline, current, b).pushed}
+              for r, b in (("none", None), ("tight", tight), ("wide", wide))}
+
+    assert pushed["none"] <= pushed["tight"], "a band must never remove a push"
+    assert pushed["wide"] <= pushed["none"] and pushed["none"] <= pushed["wide"], (
+        "a band nothing falls outside of must change nothing"
+    )
+    assert "KXGDPYEAR-29" in pushed["tight"] - pushed["none"], (
+        "the tight band should promote the known structure the baseline already held"
+    )
+    assert len(without.pushed) + len(without.suppressed) == 2
 
 
 def test_trigger_board_shows_observation_count_against_the_threshold():

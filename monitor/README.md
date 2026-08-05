@@ -154,26 +154,37 @@ Previous state is read from that ledger rather than from process memory, on
 purpose: a transition detector whose "previously seen" set resets on restart
 re-announces every band it has ever established, every time the box reboots.
 
-**An observation is a sweep, not a ledger row.** The first live run of the
-instrumentation caught this: `record()` writes one row per partition per sweep,
-KXGDPYEAR lists eleven years, and the band therefore reported *11 observations,
-KNOWN, 90¢–118¢ after a single sweep*. The "range" was a cross-section of eleven
-different contracts at one instant, not one contract over eleven moments. The
-count is now distinct capture times, and the panel shows sweeps, rows and
-contracts separately so breadth cannot be read as time.
+**An observation is a distinct capture time for a distinct event.** Both halves
+were wrong once, in the same way, and both were caught by running the instrument
+against live data rather than fixtures.
 
-### Flagged, not changed: bands pool events within a series
+*Breadth counted as time.* `record()` writes one row per partition per sweep,
+`KXGDPYEAR` lists eleven years, and the band counted rows — so it reported *11
+observations, KNOWN, 90¢–118¢ after a single sweep*. The panel now shows sweeps,
+rows and contracts separately so breadth cannot be read as time again. Shipped
+as fixture 6 in the false-positive suite.
 
-A band's range covers every event in the series, so `KXGDPYEAR-28` and
-`KXGDPYEAR-36` share one band despite being different contracts with genuinely
-different fair values. The band is consequently wider than it should be.
+*Several structures described as one.* Bands were keyed per **series**, so
+`KXGDPYEAR-28` and `KXGDPYEAR-36` shared one range despite being different
+contracts with genuinely different fair values — the same error one level up. A
+band is meant to describe one structure's behaviour over time.
 
-This is reported rather than fixed because it is a spec change, not a bug:
-re-keying bands per event changes what the third alert route means. It is also
-the safe direction — `is_outside` can only ever *promote* a detection to "new",
-never demote one, so a too-wide band under-detects novelty and cannot
-manufacture a suppression. **Decide the granularity deliberately; do not let it
-drift.**
+### The re-key, and its reset
+
+Bands were re-keyed from series to event on 2026-08-05. Observation counts
+restart per event, which is honest rather than expensive: nothing had matured,
+so nothing was lost.
+
+**The reset is written to the record, not applied silently.** On a box that
+already holds band history, the first sweep after the change appends a `rekey`
+entry to `data/monitor/band_events.jsonl` naming the superseded series keys.
+Legacy series-keyed entries stay in the file and are deliberately *not* matched
+against event keys — treating a series row as an event row would suppress the
+first genuine transition for one arbitrary event per series.
+
+Confirmed after the change: no band reads established, and `is_outside` keeps
+its promote-only property — it can raise a detection to "new" but never demote
+one, so a band can add sensitivity and never remove it.
 
 ## What it cannot see
 

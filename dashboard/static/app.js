@@ -178,7 +178,7 @@ function renderSuppressed(t, p) {
 function renderBandMaturation(p) {
   const bands = p.bands;
   if (!bands || !Object.keys(bands).length) {
-    return `<div class="vals dim">bands ${NO_DATA("no series history recorded yet")}</div>`;
+    return `<div class="vals dim">bands ${NO_DATA("no partition history recorded yet")}</div>`;
   }
   const chips = Object.entries(bands).map(([name, b]) => {
     const established = b.state === "KNOWN";

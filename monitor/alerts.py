@@ -87,11 +87,13 @@ def classify_below_par(
     2. **New structure** pushes only if capacity x edge clears the dollar floor.
        Live evidence: GDP partitions drift across par week to week, so "new"
        alone fired on $0.30 of capacity.
-    3. **Outside the series' own observed band** counts as new. A series with
-       fewer than the minimum observations has no band, reports UNKNOWN, and
-       falls back to the dollar floor alone.
+    3. **Outside the structure's own observed band** counts as new. Bands are
+       keyed per event, not per series: a series-keyed band described several
+       contracts with different fair values at once. An event with fewer than
+       the minimum observations has no band, reports UNKNOWN, and falls back to
+       the dollar floor alone.
     """
-    from scanner.history import MIN_DOLLAR_VALUE, dollar_value, series_of
+    from scanner.history import MIN_DOLLAR_VALUE, dollar_value
 
     known_events = {
         p["event"]
@@ -109,7 +111,7 @@ def classify_below_par(
         capacity = D(p["capacity_contracts"])
         value = dollar_value(cost, capacity)
         ann = D(p["annualized_pct"]) if p["annualized_pct"] is not None else D(0)
-        band = (bands or {}).get(series_of(p["event"]))
+        band = (bands or {}).get(p["event"])
 
         p["dollar_value"] = str(value)
         p["band_state"] = band.state if band else "UNKNOWN"
