@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from monitor.aggregate import ALERT_DISTINCT_SPREADS, MAX_DISTINCT_SPREADS
 from scanner import process
 
 #: Beyond this the dashboard treats the scanner as offline rather than quiet.
@@ -105,9 +106,19 @@ class ScannerState:
 
     reference: dict[str, dict[str, Any]] = field(default_factory=dict)
 
-    #: Per-series oscillation bands and the below-par push/suppress split.
+    #: Per-event oscillation bands and the below-par push/suppress split.
     bands: dict[str, Any] | None = None
     below_par: dict[str, Any] | None = None
+
+    #: Population reconciliation against the previous sweep, and the trend
+    #: series behind the market-count panel.
+    population: dict[str, Any] | None = None
+    trend: list[dict[str, Any]] | None = None
+
+    #: Distinct keys in the spread count map. Growth here is how a tick
+    #: structure change would first appear, and it is also what bounds the
+    #: aggregate's memory.
+    spread_cardinality: int | None = None
     ntfy: dict[str, Any] | None = None
 
     #: Lifetime 429 count, plus the timestamps behind it so a 24h figure is
@@ -207,6 +218,18 @@ class ScannerState:
                 },
                 "bands": self.bands,
                 "below_par": self.below_par,
+                "population": self.population,
+                "trend": self.trend,
+                "spread_cardinality": (
+                    None
+                    if self.spread_cardinality is None
+                    else {
+                        "distinct_keys": self.spread_cardinality,
+                        "alert_at": ALERT_DISTINCT_SPREADS,
+                        "hard_ceiling": MAX_DISTINCT_SPREADS,
+                        "over": self.spread_cardinality >= ALERT_DISTINCT_SPREADS,
+                    }
+                ),
                 "ntfy": self.ntfy,
                 "rate_limit_hits": self.rate_limit_hits,
                 "rate_limit": {

@@ -112,9 +112,59 @@ capacity over 2.57 years — 0.79%/yr. It is the same category as everything els
 the study found, and see [`NEGATIVE_RESULT.md`](../docs/NEGATIVE_RESULT.md)
 § "First dynamics" for what it does tell us.
 
+## Second reconciliation — 2026-08-04 → 2026-08-05
+
+Re-run against the next move, 77,047 → 84,625 over 8.2 hours (+9.8%).
+
+| Cause | Markets |
+| --- | --- |
+| Created after the prior sweep | 9,503 |
+| Created earlier, opened after the prior sweep | 6,203 |
+| `close_time` passed | 5,994 |
+| Settled early (`can_close_early`) | 2,135 |
+| **Unattributed** | **1** |
+
+23,836 markets moved for a net +7,578. **The residual is one market** —
+`KXCAGOAT-26SEP30`, created and opened 2026-07-31, absent from the prior sweep
+and present now: the same shape as the 66, at 1/66 the scale. Churn again, and
+the item closes.
+
+The first reconciliation's residual was overstated at first pass. Its `classify`
+never checked `open_time`, so 6,204 markets that were created before the
+boundary but not yet tradeable were filed as unexplained. Attribution now checks
+`created_time` before `open_time` — a market created after the boundary is a new
+listing whatever its open time — and both are applied by one shared function.
+
+## This is now continuous, and the alert is on the residual
+
+Attributing a move only when somebody notices a count changed is the wrong
+trigger: by the time a count is surprising, every baseline comparison since the
+last check is already suspect. `monitor/population.py` runs this reconciliation
+on **every full sweep** against the immediately prior one.
+
+**The alert is on the unattributed residual, never on the count.** A count that
+moves is expected and uninteresting — the last measured interval moved 40
+markets for a net −38. A market that moved for a reason none of the attribution
+rules explains is the condition that invalidates baseline comparison, and it is
+the only one worth a push.
+
+The threshold is **25 unattributed markets in one reconciliation**, and it is
+*proposed rather than settled*: it rests on two observations (66 and 1), which
+is not a distribution. It sits well above routine noise and would still have
+fired on the 66. The residual *rate* is recorded alongside the count on every
+sweep, so whether a rate rule would serve better becomes answerable from the
+archive.
+
+Attribution rules live in `src/research/reconcile.py` and are shared by the
+one-shot CLI and the scheduled job, so the investigated figures and the
+scheduled ones cannot come to mean different things. Verified: reconciling the
+two archived sweeps through the scheduled ledger path reproduces the raw-page
+figures exactly.
+
 ## Standing limitation
 
-`status=open` is a population definition supplied by the exchange, and the 66
-show it can change without notice. Future reconciliations should re-run this
-set difference rather than compare counts, and the monitor records
-market-population size per sweep so a step change is visible in the archive.
+`status=open` is a population definition supplied by the exchange, and the 66 —
+and now the 1 — show it can change without notice. Reconciliations compare
+identifiers rather than counts, and the monitor records market-population size
+per sweep, with the two-sided subset as a separate series: growth in total count
+with a flat two-sided count is a different event from both growing together.

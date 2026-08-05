@@ -79,6 +79,52 @@ provisioned around. See `monitor/aggregate.py`.
 Four sweeps is not the 24-hour gate. Only the gate, with RSS at 0h/6h/12h/24h,
 settles whether there is a slow leak.
 
+### Headroom — a note, not a new sizing
+
+The count-dependent part of memory is the aggregate's retained legs plus the two
+ticker sets reconciliation holds. Measured by direct byte counting at four
+market counts over a real snapshot:
+
+| | MB per million markets |
+| --- | --- |
+| Aggregate retention | 212 |
+| Reconciliation ticker sets | 192 |
+| **Combined** | **404** |
+
+Residuals ±1.8 MB against 21 MB of signal across a 4× range, so it is linear
+here. Anchoring to the measured live peak — 110.8 MB at 84,681 markets — gives
+34 MB count-dependent and 77 MB fixed:
+
+| Market count | Projected peak RSS |
+| --- | --- |
+| 84,681 (current) | 111 MB *(measured, not projected)* |
+| 127,022 (1.5×) | 128 MB |
+| 169,362 (2×) | 145 MB |
+| 423,405 (5×) | 248 MB |
+
+**The 1 GB tier holds to roughly 1.7 million markets — 20× current** — taking
+75% of RAM as the usable ceiling. The tier is not the binding constraint at any
+plausible population.
+
+RSS *deltas* cannot measure this slope, and it is worth recording why: across
+the same 4× range the total moved 2.6 MB with ±0.9 MB residuals, so a fit to
+RSS reads allocator arena reuse rather than retention, and extrapolates to
+nonsense. Direct byte counting is the method; RSS is the anchor.
+
+#### Flagged: the observed growth rate reaches that ceiling in about a month
+
+Market count went 70,820 → 84,681 in 41.7 hours, **+19.6%, or 10.8% per day
+compounded**. At that rate the 1 GB ceiling arrives in ~29 days, and 2 GB buys
+7 more. Doubling arrives in under a week.
+
+**Not resized on this evidence.** Three population points over two days is not a
+growth rate: the moves are dominated by churn — one 96-second interval moved 40
+markets for a net −38 — and a sports-listing burst would look identical to a
+trend at this resolution. The market-population panel now records total and
+two-sided count per sweep precisely so this is answerable from the archive
+rather than from three points. Revisit when the trend has weeks in it, and
+watch the resident-memory row meanwhile.
+
 ```ini
 # /etc/systemd/system/kalshi-scanner.service
 [Unit]

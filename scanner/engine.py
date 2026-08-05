@@ -20,12 +20,14 @@ import asyncio
 import contextlib
 import time
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import httpx
 
+from monitor import aggregate as aggregate_mod
 from monitor import alerts as alerts_mod
-from monitor import collect
+from monitor import collect, population
 from monitor.checks import tradeable_size
 from scanner import funnel, history, notify, reference, triggers
 from scanner.state import ScannerState, now
@@ -85,7 +87,11 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
             # Streaming: the sweep folds each page into bounded aggregates and
             # discards it. Nothing that scales with market count is held, here
             # or in the aggregate. See monitor/aggregate.py.
-            agg, manifest = await asyncio.to_thread(collect.sweep, collect_categories())
+            stamp = now().strftime("%Y%m%dT%H%M%SZ")
+            ledger = population.ledger_path(stamp)
+            agg, manifest = await asyncio.to_thread(
+                collect.sweep, collect_categories(), None, ledger
+            )
 
             computed = agg.result()
             try:
@@ -100,7 +106,21 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
             state.sweep_seconds = time.monotonic() - started
             state.triggers = [t.__dict__ for t in triggers.evaluate(baseline, computed)]
             state.funnel = funnel.as_dict(funnel.build_from(agg))
+
+            # Key-count growth bounds the aggregate's memory *and* is how a
+            # tick-structure change would first surface -- earlier than the
+            # share thresholds, which need 5pp of the exchange to move.
+            state.spread_cardinality = len(agg.spread_all.counts)
+            if state.spread_cardinality >= aggregate_mod.ALERT_DISTINCT_SPREADS:
+                state.log(
+                    "cardinality",
+                    f"spread count map holds {state.spread_cardinality:,} distinct values, "
+                    f"at or past the {aggregate_mod.ALERT_DISTINCT_SPREADS:,} alert level "
+                    f"(hard stop {aggregate_mod.MAX_DISTINCT_SPREADS:,}); the price grid has "
+                    "changed shape, and the measured memory figures no longer hold",
+                )
             del agg  # release the candidate legs before the loop sleeps
+            await asyncio.to_thread(_reconcile_population, state, ledger, manifest, computed)
             state.partitions = computed["verified_partitions"]["fee_free_detail"]
             state.tripwire = computed["deci_cent_fee_free_tripwire"]
             _record_proximity(state)
@@ -166,6 +186,52 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
 
         state.beat()
         await asyncio.sleep(max(0.0, FULL_SWEEP_INTERVAL - (time.monotonic() - started)))
+
+
+def _reconcile_population(
+    state: ScannerState, ledger: Path, manifest: dict, computed: dict
+) -> None:
+    """Attribute this sweep's population change against the previous sweep.
+
+    Runs every sweep rather than when somebody notices a count moved: by the
+    time a count is surprising, every baseline comparison since the last check
+    is already suspect. Never raises into the loop -- a reconciliation failure
+    must not cost a sweep.
+    """
+    universe = computed.get("universe", {})
+    try:
+        prior = population.previous_ledger(ledger)
+        report = None
+        if prior is not None:
+            report = population.reconcile(prior, ledger, population.captured_at(prior))
+            state.population = report.as_dict()
+            if report.fires:
+                state.log(
+                    "population",
+                    f"{report.unattributed} markets moved for a reason the attribution "
+                    f"rules do not explain ({report.unattributed_pct:.3f}% of "
+                    f"{report.moved:,} moved); baseline comparison is suspect until "
+                    "this is understood",
+                )
+            elif report.unattributed:
+                state.log(
+                    "population",
+                    f"{report.unattributed} unattributed of {report.moved:,} moved "
+                    f"- below the {population.UNATTRIBUTED_ALERT_THRESHOLD} threshold",
+                )
+        population.record_trend(
+            now(),
+            universe.get("n_markets", 0),
+            universe.get("n_two_sided", 0),
+            report,
+        )
+        state.trend = population.trend()
+        population.prune_ledgers()
+    except Exception as exc:  # noqa: BLE001 - surfaced, never fatal to the sweep
+        state.source("population").failed(f"{type(exc).__name__}: {exc}")
+        state.log("error", f"population reconciliation failed: {type(exc).__name__}: {exc}")
+    else:
+        state.source("population").ok()
 
 
 async def _push(state: ScannerState, fired: list) -> None:

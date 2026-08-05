@@ -80,6 +80,12 @@ class Row:
     ask_size: str
     close_time: str
     two_sided: str
+    # Population attribution. Added so a snapshot can be reconciled against
+    # another after the fact -- previously only the raw pages could, and those
+    # are gitignored, which RECONCILIATION.md had to record as a limitation.
+    created_time: str = ""
+    open_time: str = ""
+    can_close_early: str = ""
 
 
 def _get(client: httpx.Client, url: str, params: dict | None = None) -> httpx.Response:
@@ -141,6 +147,9 @@ def to_row(market: dict, series_meta: dict[str, dict]) -> Row:
         ask_size=str(market.get("yes_ask_size_fp") or "0"),
         close_time=market.get("close_time", ""),
         two_sided=str(two_sided),
+        created_time=market.get("created_time", "") or "",
+        open_time=market.get("open_time", "") or "",
+        can_close_early=str(market.get("can_close_early", "")),
     )
 
 
@@ -275,28 +284,37 @@ class SnapshotWriter:
 
 
 def sweep(
-    categories: list[str], archive_to: Path | None = None
+    categories: list[str],
+    archive_to: Path | None = None,
+    population_ledger: Path | None = None,
 ) -> tuple[SweepAggregate, dict]:
     """One full sweep, folded into bounded aggregates as it arrives.
 
-    Optionally archives every row to ``archive_to`` on the way past, without
-    holding them: the CSV writer consumes each row and drops it.
+    Optionally archives every row to ``archive_to`` and/or writes the compact
+    population-reconciliation projection to ``population_ledger``, both on the
+    way past: each writer consumes the row and drops it, so neither holds
+    anything that scales with market count.
     """
+    from contextlib import ExitStack
+
+    from monitor.population import LedgerWriter
+
     captured_at = datetime.now(UTC)
     aggregate = SweepAggregate()
     meta: dict = {"n_series": 0, "unresolved_series": []}
     stream = stream_markets(categories, meta)
 
-    if archive_to is None:
+    with ExitStack() as stack:
+        writer = stack.enter_context(SnapshotWriter(archive_to)) if archive_to else None
+        ledger = (
+            stack.enter_context(LedgerWriter(population_ledger)) if population_ledger else None
+        )
         for row in stream:
             aggregate.add(row.__dict__)
-        writer = None
-    else:
-        writer = SnapshotWriter(archive_to)
-        with writer:
-            for row in stream:
-                aggregate.add(row.__dict__)
+            if writer is not None:
                 writer.write(row)
+            if ledger is not None:
+                ledger.write(row)
 
     manifest = {
         "captured_at": captured_at.isoformat(),

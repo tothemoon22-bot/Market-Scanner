@@ -75,6 +75,8 @@ a year of weekly spread distributions answers questions the alerts cannot.
 | Fee-free series with open markets | change ≥ 3 |
 | Verified partition below par and tradeable | see below |
 | Any deci-cent ∩ fee-free market below par | any |
+| Unattributed markets in one reconciliation | ≥ 25 *(proposed)* |
+| Distinct keys in the spread count map | ≥ 2,000 |
 
 Every alert carries the trigger, the baseline value, the current value, the
 relevant memo section, and the line *"An alert is a prompt to re-read the memo,
@@ -185,6 +187,34 @@ first genuine transition for one arbitrary event per series.
 Confirmed after the change: no band reads established, and `is_outside` keeps
 its promote-only property — it can raise a detection to "new" but never demote
 one, so a band can add sensitivity and never remove it.
+
+### Population: the alert is on the residual, not the count
+
+The market count moved 70,820 → 77,047 → 84,625 in two days. Each move was
+attributed only when someone noticed, which is the wrong trigger — by then every
+baseline comparison since the last check is already suspect.
+
+`monitor/population.py` reconciles every sweep against the immediately prior one
+by set difference, attributing each moved market to `created_time`, `open_time`,
+`close_time` or `can_close_early`. **A count that moves is expected and
+uninteresting.** An unattributed market is one that moved for a reason the
+machinery does not understand, and that is the condition worth a push.
+
+The 25-market threshold is **proposed, not settled**: it rests on two
+observations (66 unattributed, then 1). The rate is recorded alongside the count
+so the archive can settle whether a rate rule serves better. See
+[`../research/RECONCILIATION.md`](../research/RECONCILIATION.md).
+
+### Spread-map cardinality
+
+The exact `Decimal → count` map that keeps the sweep's memory flat is bounded by
+the price grid — 230 distinct values across 44,453 books at baseline. Alerting
+at 2,000 keeps an order of magnitude of headroom before the 5,000 hard stop.
+
+**Key-count growth is a structural signal, not only a memory one.** A tick
+structure change is what would put new values on the grid, so this is the first
+place in the system such a change would surface — earlier than the
+tick-structure share thresholds, which need 5pp of the whole exchange to move.
 
 ## What it cannot see
 

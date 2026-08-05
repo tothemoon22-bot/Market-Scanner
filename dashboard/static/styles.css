@@ -196,6 +196,31 @@ main { padding: 0.75rem; display: flex; flex-direction: column; gap: 0.75rem; }
   opacity: 0.35;
 }
 
+/* --- population trend ---------------------------------------------------- */
+.trend {
+  display: block;
+  width: 100%;
+  height: 64px;
+  margin: 0.2rem 0 0.35rem;
+  overflow: visible;
+}
+.trend polyline {
+  fill: none;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.trend polyline.total { stroke: var(--amber); }
+.trend polyline.two-sided { stroke: var(--green); }
+.swatch {
+  display: inline-block;
+  width: 8px;
+  height: 2px;
+  vertical-align: middle;
+  margin-right: 2px;
+}
+.swatch.total { background: var(--amber); }
+.swatch.two-sided { background: var(--green); }
+
 /* --- band maturation chips ----------------------------------------------- */
 .chip {
   display: inline-block;

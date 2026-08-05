@@ -321,6 +321,99 @@ function renderPartitions(p) {
     partitions priced below par. Unverified structures never get one.</div>`;
 }
 
+/* ---------------------------------------------------------- population --- */
+/* Total count and the two-sided subset are drawn as separate series on a shared
+   axis. Growth in total with a flat two-sided count is a different event from
+   both growing together: new listings that never attract a book are not the
+   tradeable universe expanding. */
+function renderPopulation(p) {
+  const el = $("population");
+  const meta = $("population-meta");
+  const points = p.trend;
+  if (!points || points.length < 1) {
+    meta.textContent = "";
+    el.innerHTML = `<div class="nodata-block"><b>no data</b>
+      The trend is recorded one point per full sweep. None has completed.</div>`;
+    return;
+  }
+
+  const first = points[0];
+  const last = points[points.length - 1];
+  meta.textContent = points.length === 1
+    ? "1 sweep recorded"
+    : `${points.length} sweeps`;
+
+  const rows = [];
+  rows.push(`<div class="kv"><span class="k">Markets scanned</span>
+    <span class="v num">${num(last.n_markets)}</span></div>`);
+  rows.push(`<div class="kv"><span class="k">Two-sided subset
+      <br><span class="dim">both YES and NO bids resting</span></span>
+    <span class="v num">${num(last.n_two_sided)}</span></div>`);
+
+  if (points.length >= 2) {
+    rows.push(`<div class="kv"><span class="k">Change over the recorded window
+        <br><span class="dim">${points.length} sweeps</span></span>
+      <span class="v num">${signed(last.n_markets - first.n_markets)} total
+        <br><span class="dim">${signed(last.n_two_sided - first.n_two_sided)} two-sided</span></span></div>`);
+    rows.push(trendChart(points));
+  } else {
+    rows.push(`<div class="kv"><span class="k">Trend</span>
+      <span class="v">${NO_DATA("a trend needs two sweeps")}</span></div>`);
+  }
+  rows.push(reconciliationRow(p));
+  el.innerHTML = rows.join("");
+}
+
+function signed(n) {
+  const v = num(Math.abs(n));
+  return `${n >= 0 ? "+" : "−"}${v}`;
+}
+
+/* Two polylines on a shared scale, so the gap between them is readable. The
+   scale starts at zero rather than at the minimum: a truncated axis makes 9%
+   growth look like a cliff. */
+function trendChart(points) {
+  const w = 300, h = 64, pad = 2;
+  const peak = Math.max(...points.map((d) => d.n_markets));
+  const x = (i) => pad + (i / Math.max(1, points.length - 1)) * (w - 2 * pad);
+  const y = (v) => h - pad - (v / peak) * (h - 2 * pad);
+  const line = (key) => points.map((d, i) => `${x(i).toFixed(1)},${y(d[key]).toFixed(1)}`).join(" ");
+  return `<div class="kv"><span class="k">Count over time
+      <br><span class="dim">axis from zero</span></span></div>
+    <svg class="trend" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"
+         role="img" aria-label="market count over time, total and two-sided">
+      <polyline class="total" points="${line("n_markets")}"></polyline>
+      <polyline class="two-sided" points="${line("n_two_sided")}"></polyline>
+    </svg>
+    <div class="vals dim"><span class="swatch total"></span> total ·
+      <span class="swatch two-sided"></span> two-sided</div>`;
+}
+
+/* The alert is on the unattributed residual, never on the count. A count that
+   moves is expected; a market that moved for a reason the rules do not explain
+   is what invalidates baseline comparison. */
+function reconciliationRow(p) {
+  const r = p.population;
+  if (!r) {
+    return `<div class="kv"><span class="k">Reconciled against prior sweep</span>
+      <span class="v">${NO_DATA("needs two sweeps to compare")}</span></div>`;
+  }
+  const causes = Object.entries({ ...r.added_causes, ...r.removed_causes })
+    .sort((a, b) => b[1] - a[1])
+    .map(([cause, n]) => `<div class="vals dim">${num(n)} · ${esc(cause)}</div>`)
+    .join("");
+  return `<div class="kv"><span class="k">Reconciled against prior sweep
+      <br><span class="dim">${esc(r.prior)}</span></span>
+    <span class="v num">${signed(r.delta)}
+      <br><span class="dim">${num(r.added)} added · ${num(r.removed)} removed</span></span></div>
+    ${causes}
+    <div class="kv"><span class="k">Unattributed residual
+        <br><span class="dim">the only condition worth a push</span></span>
+      <span class="v num ${r.fires ? "bad" : "good"}">${num(r.unattributed)}
+        <br><span class="dim">${r.unattributed_pct}% of ${num(r.moved)} moved ·
+          fires at ${num(r.threshold)}</span></span></div>`;
+}
+
 /* -------------------------------------------------------------- health --- */
 function renderHealth(p) {
   const el = $("health");
@@ -372,6 +465,7 @@ function renderHealth(p) {
   rows.push(`<div class="kv"><span class="k">Uptime</span>
     <span class="v num">${age(p.uptime_seconds) ?? NO_DATA("scanner has not started")}</span></div>`);
   rows.push(rssRow(p));
+  rows.push(cardinalityRow(p));
   el.innerHTML = rows.join("");
 }
 
@@ -448,6 +542,23 @@ function sparkline(daily) {
     return `<i style="height:${h}%" class="${d.count ? "" : "zero"}" title="${esc(d.day)}: ${d.count}"></i>`;
   }).join("");
   return `<span class="spark" aria-label="suppressed detections per day">${bars}</span>`;
+}
+
+/* Sits next to RSS because it is the other half of the same bound: the spread
+   count map is what keeps the sweep's memory flat, and its key count is what
+   keeps the map bounded. Growth here is also a structural signal — a tick
+   structure change is what would put new values on the grid, and this is where
+   it would surface first. */
+function cardinalityRow(p) {
+  const c = p.spread_cardinality;
+  if (!c) {
+    return `<div class="kv"><span class="k">Spread map cardinality</span>
+      <span class="v">${NO_DATA("no sweep has completed")}</span></div>`;
+  }
+  return `<div class="kv"><span class="k">Spread map cardinality
+      <br><span class="dim">distinct values; growth means the grid changed</span></span>
+    <span class="v num ${c.over ? "bad" : "good"}">${num(c.distinct_keys)}
+      <br><span class="dim">alerts at ${num(c.alert_at)} · stops at ${num(c.hard_ceiling)}</span></span></div>`;
 }
 
 function rssRow(p) {
@@ -544,6 +655,7 @@ function render(p) {
   renderSpread(p);
   renderTicks(p);
   renderPartitions(p);
+  renderPopulation(p);
   renderHealth(p);
   renderReference(p);
   renderLog(p);

@@ -87,20 +87,73 @@ def series_of(market: dict) -> str:
     return market.get("event_ticker", "").split("-")[0]
 
 
+# --------------------------------------------------------------------------
+# Attribution. One definition, shared by the one-shot CLI below and the
+# per-sweep job in monitor/population.py, so the scheduled figures and the
+# investigated ones cannot mean different things.
+#
+# **The residual is the point.** A market count that moves is expected and
+# uninteresting; a market that moved for a reason none of these rules explains
+# is the condition that invalidates baseline comparison.
+# --------------------------------------------------------------------------
+
+ADDED_RFQ = "rfq-shell leaked past mve_filter"
+ADDED_CREATED = "created after the prior sweep"
+ADDED_OPENED = "created earlier, opened after the prior sweep"
+REMOVED_SETTLED = "close_time passed"
+REMOVED_EARLY = "settled early (can_close_early)"
+UNATTRIBUTED = "unattributed"
+
+
+def _at(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _truthy(value: object) -> bool:
+    return str(value).strip().lower() in {"true", "1", "yes"}
+
+
+def attribute_added(market: dict, boundary: datetime | None) -> str:
+    """Why is this market in the later population and not the earlier one?
+
+    Order matters: ``created_time`` is checked before ``open_time`` because a
+    market created after the boundary is a new listing whatever its open time,
+    while one created before but opened after was correctly excluded rather
+    than missed.
+    """
+    if str(market.get("ticker", "")).startswith(RFQ_PREFIX):
+        return ADDED_RFQ
+    if boundary is None:
+        return UNATTRIBUTED
+    created = _at(market.get("created_time"))
+    if created is not None and created > boundary:
+        return ADDED_CREATED
+    opened = _at(market.get("open_time"))
+    if opened is not None and opened > boundary:
+        return ADDED_OPENED
+    return UNATTRIBUTED
+
+
+def attribute_removed(market: dict, now: datetime) -> str:
+    """Why is this market in the earlier population and not the later one?"""
+    close = _at(market.get("close_time"))
+    if close is not None and close < now:
+        return REMOVED_SETTLED
+    if _truthy(market.get("can_close_early")):
+        return REMOVED_EARLY
+    return UNATTRIBUTED
+
+
 def classify(market: dict, boundary: datetime | None) -> str:
-    """Why is this market in one population and not the other?"""
-    ticker = market["ticker"]
-    if ticker.startswith(RFQ_PREFIX):
-        return "rfq-shell leaked past mve_filter"
-    if market.get("status") != "active":
+    """Backwards-compatible label for the CLI's live-only breakdown."""
+    if market.get("status") not in (None, "active"):
         return f"status={market.get('status')!r} (not active)"
-    created = market.get("created_time")
-    if created and boundary:
-        when = datetime.fromisoformat(created.replace("Z", "+00:00"))
-        if when > boundary:
-            return "listed after the baseline sweep"
-        return "present before the baseline sweep but absent from it"
-    return "no created_time to attribute"
+    return attribute_added(market, boundary)
 
 
 def run(baseline_dir: Path, live: dict[str, dict[str, Any]], live_label: str) -> dict[str, Any]:

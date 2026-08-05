@@ -73,6 +73,17 @@ D = Decimal
 #: wrong and the process look healthy.
 MAX_DISTINCT_SPREADS = 5000
 
+#: Alert well below the hard ceiling. 230 distinct values across 44,453 books is
+#: the measured baseline, so 2,000 is an order of magnitude of headroom and
+#: still leaves 2.5x before :data:`MAX_DISTINCT_SPREADS` stops the process.
+#:
+#: **Key-count growth is a structural signal, not only a memory one.** A tick
+#: structure change is what would put new values on the grid, so this is the
+#: first place in the system such a change would surface -- earlier than the
+#: tick-structure share thresholds, which need 5pp of the whole exchange to
+#: move.
+ALERT_DISTINCT_SPREADS = 2000
+
 #: The deci-cent AND fee-free intersection held 61 markets at baseline. Two
 #: orders of magnitude of headroom, then a raise -- because at that size the
 #: interesting event is the intersection, not the memory.
