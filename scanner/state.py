@@ -37,36 +37,105 @@ def _drift(achieved: float | None, configured: float | None) -> float | None:
     return None if achieved is None or configured is None else achieved - configured
 
 
+#: Every named subsystem that can fail. Registered up front so one that has
+#: never run renders as an explicit NEVER RUN rather than being absent from the
+#: payload -- absence and zero are the confusion this whole module exists to
+#: prevent, and a subsystem that silently never registered is the worst case of
+#: it.
+SUBSYSTEMS = (
+    "kalshi_sweep",
+    "kalshi_tracked",
+    "kalshi_fee_changes",
+    "population",
+    "series_metadata",
+    "binance_vision",
+    "coinbase",
+    "ntfy",
+)
+
+#: Consecutive failures of one subsystem before it pushes on its own account,
+#: with no detection threshold involved. Three hourly sweeps is three hours of a
+#: dead subsystem, which is long enough to rule out a transient and short enough
+#: to matter.
+CONSECUTIVE_FAILURE_ALERT = 3
+
+
+class Outcome:
+    """Why a panel has no data. Three states, never collapsed into one.
+
+    ``NOT_RUN``  the work has not been attempted yet
+    ``EMPTY``    it ran, and there was genuinely nothing
+    ``FAILED``   it was attempted and threw
+
+    The `.csv.gz` filename bug rendered as NOT_RUN forever while the subsystem
+    threw on every sweep: a permanently broken subsystem was indistinguishable
+    from a normal empty state. Collapsing these three is that bug's shape.
+    """
+
+    NOT_RUN = "not_run"
+    EMPTY = "empty"
+    FAILED = "failed"
+    OK = "ok"
+
+    @staticmethod
+    def make(state: str, reason: str, data: Any = None) -> dict[str, Any]:
+        return {"state": state, "reason": reason, "data": data, "at": now().isoformat()}
+
+
 @dataclass
 class SourceHealth:
-    """One ingest source. `last_error` is kept: a source that fails loudly."""
+    """One subsystem. `last_error` is kept: a source that fails loudly.
+
+    ``consecutive_failures`` is the field that matters most. A total is easy to
+    dismiss as historical; a run of them is a subsystem that is down now.
+    """
 
     name: str
     last_success: datetime | None = None
     last_error: str = ""
+    last_error_type: str = ""
     last_error_at: datetime | None = None
     successes: int = 0
     failures: int = 0
+    consecutive_failures: int = 0
 
     def ok(self, at: datetime | None = None) -> None:
         self.last_success = at or now()
         self.successes += 1
+        self.consecutive_failures = 0
 
-    def failed(self, message: str) -> None:
+    def failed(self, message: str, exc: BaseException | None = None) -> None:
         self.last_error = message
+        self.last_error_type = type(exc).__name__ if exc is not None else message.split(":")[0]
         self.last_error_at = now()
         self.failures += 1
+        self.consecutive_failures += 1
+
+    @property
+    def state(self) -> str:
+        """NEVER RUN, FAILING and OK are three different things."""
+        if self.successes == 0 and self.failures == 0:
+            return "NEVER_RUN"
+        if self.consecutive_failures:
+            return "FAILING"
+        return "OK"
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
+            "state": self.state,
             "age_seconds": _age(self.last_success),
             "last_success": self.last_success.isoformat() if self.last_success else None,
             "successes": self.successes,
             "failures": self.failures,
+            "consecutive_failures": self.consecutive_failures,
             "last_error": self.last_error,
+            "last_error_type": self.last_error_type,
             "last_error_at": self.last_error_at.isoformat() if self.last_error_at else None,
-            "healthy": self.last_success is not None and (_age(self.last_success) or 0) < 120,
+            "last_error_age_seconds": _age(self.last_error_at),
+            "healthy": self.state == "OK"
+            and self.last_success is not None
+            and (_age(self.last_success) or 0) < 120,
         }
 
 
@@ -111,9 +180,25 @@ class ScannerState:
     below_par: dict[str, Any] | None = None
 
     #: Population reconciliation against the previous sweep, and the trend
-    #: series behind the market-count panel.
+    #: series behind the market-count panel. `population` is an Outcome
+    #: envelope, never a bare payload: "no prior sweep" and "the comparison
+    #: threw" must not render identically.
     population: dict[str, Any] | None = None
     trend: list[dict[str, Any]] | None = None
+
+    #: Series whose metadata could not be resolved. An unresolved series has an
+    #: empty fee_multiplier, so it silently drops out of the fee-free universe
+    #: -- a shrinking headline number with no visible cause.
+    unresolved_series: list[str] | None = None
+
+    #: Alerts that fired but could not be delivered. A push that failed is not
+    #: an alert that did not fire.
+    undelivered_alerts: list[dict[str, Any]] | None = None
+
+    #: Legs whose fee_type the model does not recognise. funnel._fee_model
+    #: falls back to quadratic so the funnel still computes; the substitution
+    #: is counted here rather than made silently.
+    unknown_fee_types: dict[str, int] | None = None
 
     #: Distinct keys in the spread count map. Growth here is how a tick
     #: structure change would first appear, and it is also what bounds the
@@ -129,7 +214,9 @@ class ScannerState:
     invariant_violations: int = 0
     invariant_last: dict[str, Any] | None = None
 
-    sources: dict[str, SourceHealth] = field(default_factory=dict)
+    sources: dict[str, SourceHealth] = field(
+        default_factory=lambda: {name: SourceHealth(name) for name in SUBSYSTEMS}
+    )
     events: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=200))
 
     #: Set once the first full sweep lands. Before that the UI shows NO DATA
@@ -218,8 +305,17 @@ class ScannerState:
                 },
                 "bands": self.bands,
                 "below_par": self.below_par,
-                "population": self.population,
+                "population": self.population
+                or Outcome.make(Outcome.NOT_RUN, "no full sweep has completed"),
                 "trend": self.trend,
+                "unresolved_series": self.unresolved_series,
+                "undelivered_alerts": self.undelivered_alerts,
+                "unknown_fee_types": self.unknown_fee_types,
+                "failing_subsystems": [
+                    h.as_dict()
+                    for h in sorted(self.sources.values(), key=lambda s: s.name)
+                    if h.consecutive_failures
+                ],
                 "spread_cardinality": (
                     None
                     if self.spread_cardinality is None

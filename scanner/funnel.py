@@ -10,6 +10,7 @@ attrition when it is a change of denominator.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -30,11 +31,20 @@ class Stage:
     note: str = ""
 
 
+#: fee_type values seen that the model does not know, and how often. The
+#: fallback below keeps the funnel computable, but an unrecognised fee schedule
+#: priced as quadratic is a *substituted* number, not a measured one, and a
+#: silent substitution inside a fee gate is how a gate stops meaning anything.
+#: Reset per build; surfaced on the health panel.
+unknown_fee_types: Counter[str] = Counter()
+
+
 def _fee_model(leg: dict) -> FeeModel:
     raw_type = leg.get("fee_type") or "quadratic"
     try:
         fee_type = FeeType(raw_type)
     except ValueError:
+        unknown_fee_types[raw_type] += 1
         fee_type = FeeType.QUADRATIC
     multiplier = leg.get("fee_multiplier")
     return FeeModel(fee_type, D(multiplier) if multiplier not in (None, "") else D(1))

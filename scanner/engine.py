@@ -30,7 +30,7 @@ from monitor import alerts as alerts_mod
 from monitor import collect, population
 from monitor.checks import tradeable_size
 from scanner import funnel, history, notify, reference, triggers
-from scanner.state import ScannerState, now
+from scanner.state import CONSECUTIVE_FAILURE_ALERT, Outcome, ScannerState, now
 
 D = Decimal
 
@@ -94,18 +94,51 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
             )
 
             computed = agg.result()
+            # A failed fee-change fetch is not "no scheduled fee changes". If it
+            # is swallowed into an absent key, that trigger is dead and reads as
+            # a quiet all-clear -- so the outcome is recorded either way and the
+            # subsystem's failure count carries it to the health panel.
             try:
-                fee_changes = await asyncio.to_thread(_fee_changes)
-                computed["fee_changes"] = fee_changes
+                computed["fee_changes"] = await asyncio.to_thread(_fee_changes)
+                state.source("kalshi_fee_changes").ok()
             except Exception as exc:  # noqa: BLE001 - surfaced, not swallowed
-                state.source("kalshi_fee_changes").failed(f"{type(exc).__name__}: {exc}")
+                state.source("kalshi_fee_changes").failed(f"{type(exc).__name__}: {exc}", exc)
+                computed["fee_changes_outcome"] = Outcome.make(
+                    Outcome.FAILED,
+                    f"{type(exc).__name__}: {exc}; the scheduled-fee-change trigger "
+                    "did not run this sweep",
+                )
 
             state.metrics = computed
             state.metrics_at = now()
             state.sweep_count += 1
             state.sweep_seconds = time.monotonic() - started
             state.triggers = [t.__dict__ for t in triggers.evaluate(baseline, computed)]
+            funnel.unknown_fee_types.clear()
             state.funnel = funnel.as_dict(funnel.build_from(agg))
+            state.unknown_fee_types = dict(funnel.unknown_fee_types)
+            if funnel.unknown_fee_types:
+                state.log(
+                    "fee-model",
+                    "priced as quadratic because the fee model does not recognise: "
+                    + ", ".join(f"{k} x{v}" for k, v in funnel.unknown_fee_types.items()),
+                )
+
+            # An unresolved series has no fee_multiplier, so it drops out of the
+            # fee-free universe without appearing to. Surface the count.
+            # The pass ran, so the subsystem is up: unresolved series are a
+            # *degraded reading*, not an outage, and collapsing the two would
+            # be the same conflation this audit exists to remove. It shows on
+            # the degraded-readings row, and a chronic handful must not page.
+            state.unresolved_series = manifest.get("unresolved_series") or []
+            state.source("series_metadata").ok()
+            if state.unresolved_series:
+                state.log(
+                    "series",
+                    f"{len(state.unresolved_series)} series metadata lookups failed; "
+                    "those markets carry no fee_multiplier and are excluded from the "
+                    f"fee-free universe: {state.unresolved_series[:5]}",
+                )
 
             # Key-count growth bounds the aggregate's memory *and* is how a
             # tick-structure change would first surface -- earlier than the
@@ -181,8 +214,13 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
                 state.log("alert", alert.trigger, baseline=alert.baseline, current=alert.current)
             await _push(state, fired)
         except Exception as exc:  # noqa: BLE001
-            source.failed(f"{type(exc).__name__}: {exc}")
+            source.failed(f"{type(exc).__name__}: {exc}", exc)
             state.log("error", f"full sweep failed: {type(exc).__name__}: {exc}")
+
+        # Outside the try: a subsystem being down is exactly the case where the
+        # sweep may also have thrown, and this must still run.
+        with contextlib.suppress(Exception):
+            await _push_subsystem_failures(state)
 
         state.beat()
         await asyncio.sleep(max(0.0, FULL_SWEEP_INTERVAL - (time.monotonic() - started)))
@@ -202,9 +240,16 @@ def _reconcile_population(
     try:
         prior = population.previous_ledger(ledger)
         report = None
-        if prior is not None:
+        if prior is None:
+            # The one case where "needs two sweeps" is the truth.
+            state.population = Outcome.make(
+                Outcome.NOT_RUN, "no prior sweep ledger exists yet"
+            )
+        else:
             report = population.reconcile(prior, ledger, population.captured_at(prior))
-            state.population = report.as_dict()
+            state.population = Outcome.make(
+                Outcome.OK, "reconciled against the prior sweep", report.as_dict()
+            )
             if report.fires:
                 state.log(
                     "population",
@@ -228,7 +273,16 @@ def _reconcile_population(
         state.trend = population.trend()
         population.prune_ledgers()
     except Exception as exc:  # noqa: BLE001 - surfaced, never fatal to the sweep
-        state.source("population").failed(f"{type(exc).__name__}: {exc}")
+        # The instinct is right: a reconciliation failure must not cost a sweep.
+        # The consequence is what has to be visible. Without this the panel
+        # would keep saying "needs two sweeps to compare" while the subsystem
+        # threw every hour -- which is exactly how the .csv.gz bug would have
+        # presented had a test not caught it.
+        state.source("population").failed(f"{type(exc).__name__}: {exc}", exc)
+        state.population = Outcome.make(
+            Outcome.FAILED,
+            f"reconciliation raised {type(exc).__name__}: {exc}",
+        )
         state.log("error", f"population reconciliation failed: {type(exc).__name__}: {exc}")
     else:
         state.source("population").ok()
@@ -248,10 +302,73 @@ async def _push(state: ScannerState, fired: list) -> None:
         async with httpx.AsyncClient() as client:
             sent = await notify.push_alerts(client, cfg, fired)
         source.ok()
+        state.undelivered_alerts = []
         state.log("push", f"pushed {sent} alert(s) to ntfy")
     except Exception as exc:  # noqa: BLE001
-        source.failed(f"{type(exc).__name__}: {exc}")
-        state.log("error", f"ntfy push failed: {type(exc).__name__}")
+        # An alert that failed to send is not an alert that did not fire. The
+        # trigger board would otherwise show it as delivered, and the only
+        # trace would be a log line nobody reads.
+        source.failed(f"{type(exc).__name__}: {exc}", exc)
+        state.undelivered_alerts = [
+            {"trigger": a.trigger, "at": now().isoformat(), "why": type(exc).__name__}
+            for a in fired
+        ]
+        state.log(
+            "error",
+            f"ntfy push failed: {type(exc).__name__}; {len(fired)} alert(s) fired but "
+            "were not delivered",
+        )
+
+
+async def _push_subsystem_failures(state: ScannerState) -> None:
+    """Push when a subsystem has failed CONSECUTIVE_FAILURE_ALERT sweeps running.
+
+    No detection threshold is involved. **A monitor whose subsystems fail
+    quietly is the failure mode this project exists to avoid**, so a dead
+    subsystem is news on its own account.
+
+    ``ntfy`` is deliberately excluded from what this will push about: the
+    transport cannot carry news of its own failure, and a handler that tries
+    would be a check sharing a failure mode with its subject. It is surfaced on
+    the health panel instead, and the missing monthly heartbeat is the
+    out-of-band signal -- silence reads as dead, which is the safe direction.
+    """
+    down = [
+        h
+        for h in state.sources.values()
+        if h.name != "ntfy" and h.consecutive_failures >= CONSECUTIVE_FAILURE_ALERT
+    ]
+    if not down:
+        return
+
+    for h in down:
+        state.log(
+            "subsystem",
+            f"{h.name} has failed {h.consecutive_failures} consecutive sweeps "
+            f"({h.last_error_type}); it is not reporting, and its panel is not "
+            "evidence of anything",
+        )
+
+    cfg = notify.config_from_env()
+    if not cfg.configured:
+        return
+    body = "\n".join(
+        f"{h.name}: {h.consecutive_failures} consecutive failures, "
+        f"{h.failures} total, last {h.last_error_type}"
+        for h in down
+    )
+    try:
+        async with httpx.AsyncClient() as client:
+            await notify.push(
+                client,
+                cfg,
+                title="Kalshi scanner: subsystem down",
+                body=f"{body}\n\n{alerts_mod.FOOTER}",
+                priority="high",
+            )
+        state.source("ntfy").ok()
+    except Exception as exc:  # noqa: BLE001
+        state.source("ntfy").failed(f"{type(exc).__name__}: {exc}", exc)
 
 
 def heartbeat_summary(state: ScannerState) -> str:
@@ -301,7 +418,7 @@ async def heartbeat_loop(state: ScannerState) -> None:
             state.source("ntfy").ok()
             state.log("push", "monthly heartbeat sent, with suppressed-ledger review")
         except Exception as exc:  # noqa: BLE001
-            state.source("ntfy").failed(f"{type(exc).__name__}: {exc}")
+            state.source("ntfy").failed(f"{type(exc).__name__}: {exc}", exc)
 
 
 def _record_proximity(state: ScannerState) -> None:
@@ -384,7 +501,7 @@ async def tracked_loop(state: ScannerState) -> None:
                 state.tracked_poll_seconds = time.monotonic() - started
                 source.ok()
             except Exception as exc:  # noqa: BLE001
-                source.failed(f"{type(exc).__name__}: {exc}")
+                source.failed(f"{type(exc).__name__}: {exc}", exc)
                 state.log("error", f"tracked poll failed: {type(exc).__name__}: {exc}")
 
             state.beat()
@@ -454,7 +571,7 @@ async def reference_loop(state: ScannerState) -> None:
                     state.reference[name] = await fetch(client)
                     source.ok()
                 except Exception as exc:  # noqa: BLE001
-                    source.failed(f"{type(exc).__name__}: {exc}")
+                    source.failed(f"{type(exc).__name__}: {exc}", exc)
                     state.reference.pop(name, None)
                     state.log(
                         "error",

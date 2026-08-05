@@ -200,10 +200,63 @@ by set difference, attributing each moved market to `created_time`, `open_time`,
 uninteresting.** An unattributed market is one that moved for a reason the
 machinery does not understand, and that is the condition worth a push.
 
-The 25-market threshold is **proposed, not settled**: it rests on two
-observations (66 unattributed, then 1). The rate is recorded alongside the count
-so the archive can settle whether a rate rule serves better. See
+The 25-market threshold is **provisional, and its original anchor was
+retracted.** It was justified partly by "would still have fired on the 66" — but
+the 66 was a classifier artifact, because the original `classify` never checked
+`open_time`. What remains is one clean observation of 1.
+
+It is deliberately **not re-derived** from the corrected history: one point is
+not a distribution, and neither is two points plus a retracted one. The review is
+dated rather than left to memory — `population.threshold_review()` carries the
+due date (2026-09-30, eight weeks of residual-rate data) and the reason. The
+residual and rate are recorded every sweep so the archive answers it. See
 [`../research/RECONCILIATION.md`](../research/RECONCILIATION.md).
+
+### Growth: listing cadence or expansion
+
+The reconciliation buckets every open market by time to `close_time`, and does
+the same for the markets added since the prior sweep. **This is what decides
+whether a growth rate compounds.** Measured on the 77,047 → 84,625 move: 97.1%
+of the net was in markets resolving within seven days, which cannot accumulate
+because they expire inside the window. The long-dated population grew 1.9%/day
+against a headline of 10.8%/day — a 5.7× difference from the same sweep pair,
+which a market count alone cannot see.
+
+## Silent failure: catching must produce a state
+
+A `try/except` that stops a subsystem killing a sweep is right, and it stays.
+What it must not do is leave the caller unable to tell *ran and found nothing*
+from *did not run*. The `.csv.gz` filename bug would have thrown every sweep,
+been logged, been swallowed, and rendered as "needs two sweeps to compare"
+indefinitely while the scanner reported healthy.
+
+Three mechanisms, all enforced by `tests/test_silent_failure.py`:
+
+- **Failure counters.** Every subsystem carries successes, total failures,
+  *consecutive* failures, the last failure time and the exception type. All
+  eight are registered before they run, so one that has never run shows
+  `NEVER RUN` rather than being absent, and one with no failures shows a
+  confirmed `0 failures`.
+- **Three empty states.** `NO DATA` (not measured), `NOT YET RUN` (not
+  attempted), and `<subsystem> FAILED` (attempted and threw, with the reason)
+  are three renderings with three marks, never one.
+- **Consecutive-failure push.** Three failing sweeps pushes on its own account,
+  with no detection threshold involved. `ntfy` is excluded from what it will
+  push about: the transport cannot carry news of its own failure, and a handler
+  that tried would be a check sharing a failure mode with its subject. The
+  missing monthly heartbeat is the out-of-band signal there.
+
+Every swallowing handler in `scanner/` and `monitor/` either records into a
+counter or an Outcome, or sits on a reviewed allowlist stating why the caller
+can still tell the difference. A new one that is neither fails the suite.
+
+**Degradation is not outage.** A metadata pass that completes with two lookups
+failed is a degraded reading, shown on its own row; filing it as a subsystem
+failure would page every sweep on a chronic benign condition, which is the same
+conflation in the other direction. Live sweeps currently show 2 unresolved
+series (`KXMLBWINS`, `KXNEWOUTBREAK`) against 11 fee-free series — those markets
+carry no `fee_multiplier` and silently leave the fee-free universe, which was
+invisible before this panel existed.
 
 ### Spread-map cardinality
 

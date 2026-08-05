@@ -111,19 +111,38 @@ the same 4× range the total moved 2.6 MB with ±0.9 MB residuals, so a fit to
 RSS reads allocator arena reuse rather than retention, and extrapolates to
 nonsense. Direct byte counting is the method; RSS is the anchor.
 
-#### Flagged: the observed growth rate reaches that ceiling in about a month
+#### The growth is listing cadence, not expansion
 
 Market count went 70,820 → 84,681 in 41.7 hours, **+19.6%, or 10.8% per day
-compounded**. At that rate the 1 GB ceiling arrives in ~29 days, and 2 GB buys
-7 more. Doubling arrives in under a week.
+compounded**. Taken at face value that reaches the 1 GB ceiling in ~29 days.
 
-**Not resized on this evidence.** Three population points over two days is not a
-growth rate: the moves are dominated by churn — one 96-second interval moved 40
-markets for a net −38 — and a sports-listing burst would look identical to a
-trend at this resolution. The market-population panel now records total and
-two-sided count per sweep precisely so this is answerable from the archive
-rather than from three points. Revisit when the trend has weeks in it, and
-watch the resident-memory row meanwhile.
+It should not be taken at face value, and the horizon decomposition says why.
+Bucketing the 77,047 → 84,625 move by time to `close_time`:
+
+| Horizon | Prior | Current | Net | Share of the 15,707 added |
+| --- | --- | --- | --- | --- |
+| <24h | 6,571 | 8,018 | +1,447 | 45.8% |
+| 1–7d | 12,827 | 18,742 | +5,915 | 43.7% |
+| 7–30d | 7,438 | 7,329 | −109 | 7.0% |
+| 30d–1y | 34,189 | 34,488 | +299 | 3.4% |
+| >1y | 16,022 | 16,048 | +26 | 0.2% |
+
+**97.1% of the net growth is in markets that resolve within seven days**, and
+89.5% of added markets are sub-7-day. Those cannot accumulate: they expire
+inside the window, so the short-dated population is bounded by listing rate ×
+horizon, and it plateaus. What compounds is the long-dated population, and that
+grew **+325 markets, +0.6% over 8.2 hours — 1.9%/day**, not 10.8%. At that rate
+the 1 GB ceiling is ~187 days away rather than 29, and it is one 8-hour
+observation, so even that is soft.
+
+The headline number and the compounding number differ by 5.7×, from the same
+sweep pair. **A market count alone cannot tell them apart**, which is why the
+distribution is now recorded per sweep rather than derived once.
+
+**Still not resized.** The evidence now points away from the flag rather than
+toward it, but the trend panel records the bucket distribution every sweep so
+net change *per horizon* is answerable from the archive. Watch the
+resident-memory row meanwhile.
 
 ```ini
 # /etc/systemd/system/kalshi-scanner.service

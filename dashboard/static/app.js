@@ -11,7 +11,30 @@
  */
 
 const $ = (id) => document.getElementById(id);
+
+/* Three empty states, never collapsed into one.
+ *
+ *   NO_DATA   the value was not measured
+ *   NOT_RUN   the work has not been attempted yet
+ *   FAILED    it was attempted and threw, and this names the subsystem
+ *
+ * A subsystem that throws on every sweep once rendered identically to one that
+ * had simply never had a second sweep to compare against. That is the failure
+ * this distinction exists to prevent, so it is three chips with three colours,
+ * not one chip with three meanings. */
 const NO_DATA = (why) => `<span class="nodata" title="${esc(why || "")}">no data</span>`;
+const NOT_RUN = (why) => `<span class="notrun" title="${esc(why || "")}">not yet run</span>`;
+const FAILED = (subsystem, why) =>
+  `<span class="failed" title="${esc(why || "")}">${esc(subsystem)} failed</span>`;
+
+/* Renders an Outcome envelope: {state, reason, data}. */
+function outcomeChip(o, subsystem) {
+  if (!o) return NO_DATA("no outcome recorded");
+  if (o.state === "failed") return FAILED(subsystem, o.reason);
+  if (o.state === "not_run") return NOT_RUN(o.reason);
+  if (o.state === "empty") return `<span class="dim" title="${esc(o.reason)}">none</span>`;
+  return "";
+}
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) =>
@@ -361,6 +384,7 @@ function renderPopulation(p) {
       <span class="v">${NO_DATA("a trend needs two sweeps")}</span></div>`);
   }
   rows.push(reconciliationRow(p));
+  rows.push(horizonRow(p));
   el.innerHTML = rows.join("");
 }
 
@@ -393,11 +417,16 @@ function trendChart(points) {
    moves is expected; a market that moved for a reason the rules do not explain
    is what invalidates baseline comparison. */
 function reconciliationRow(p) {
-  const r = p.population;
-  if (!r) {
-    return `<div class="kv"><span class="k">Reconciled against prior sweep</span>
-      <span class="v">${NO_DATA("needs two sweeps to compare")}</span></div>`;
+  const o = p.population;
+  /* "Needs two sweeps to compare" is true only when the prior sweep genuinely
+     does not exist. If the comparison was attempted and threw, this says so and
+     names the subsystem. */
+  if (!o || o.state !== "ok" || !o.data) {
+    return `<div class="kv"><span class="k">Reconciled against prior sweep
+        <br><span class="dim">${esc((o && o.reason) || "")}</span></span>
+      <span class="v">${outcomeChip(o, "reconciliation")}</span></div>`;
   }
+  const r = o.data;
   const causes = Object.entries({ ...r.added_causes, ...r.removed_causes })
     .sort((a, b) => b[1] - a[1])
     .map(([cause, n]) => `<div class="vals dim">${num(n)} · ${esc(cause)}</div>`)
@@ -414,6 +443,44 @@ function reconciliationRow(p) {
           fires at ${num(r.threshold)}</span></span></div>`;
 }
 
+/* Growth concentrated in the short buckets is listing cadence: those markets
+   expire within days, so the population plateaus rather than compounding.
+   Growth in the long buckets is genuine expansion. Same headline percentage,
+   completely different ceilings — so both distributions are shown, and the
+   added column is the one that answers it. */
+function horizonRow(p) {
+  const o = p.population;
+  if (!o || o.state !== "ok" || !o.data || !o.data.horizons) {
+    return `<div class="kv"><span class="k">Resolution horizon</span>
+      <span class="v">${outcomeChip(o, "reconciliation")}</span></div>`;
+  }
+  const { horizons, added_horizons: added, added_short_dated_pct: shortPct } = o.data;
+  const total = Object.values(horizons).reduce((a, b) => a + b, 0);
+  const addedTotal = Object.values(added).reduce((a, b) => a + b, 0);
+  if (!total) {
+    return `<div class="kv"><span class="k">Resolution horizon</span>
+      <span class="v">${NO_DATA("no markets bucketed")}</span></div>`;
+  }
+  const order = ["<24h", "1-7d", "7-30d", "30d-1y", ">1y", "unknown"];
+  const body = order.filter((b) => horizons[b] || added[b]).map((b) => {
+    const share = (horizons[b] / total) * 100;
+    const addShare = addedTotal ? (added[b] / addedTotal) * 100 : 0;
+    return `<tr><td>${esc(b)}</td>
+      <td class="r">${num(horizons[b])}</td>
+      <td class="r dim">${share.toFixed(1)}%</td>
+      <td class="r">${num(added[b])}</td>
+      <td class="r dim">${addedTotal ? addShare.toFixed(1) + "%" : "—"}</td></tr>`;
+  }).join("");
+  return `<div class="kv"><span class="k">Resolution horizon
+      <br><span class="dim">short-dated growth is listing cadence, not expansion</span></span>
+    <span class="v num">${addedTotal ? shortPct.toFixed(0) + "%" : "—"}
+      <br><span class="dim">of added resolve &lt;24h</span></span></div>
+    <div class="scroll-x"><table><thead><tr>
+      <th>Horizon</th><th class="r">Open</th><th class="r">share</th>
+      <th class="r">Added</th><th class="r">share</th></tr></thead>
+      <tbody>${body}</tbody></table></div>`;
+}
+
 /* -------------------------------------------------------------- health --- */
 function renderHealth(p) {
   const el = $("health");
@@ -423,13 +490,28 @@ function renderHealth(p) {
     rows.push(`<div class="nodata-block"><b>no sources</b>
       No ingest source has reported yet.</div>`);
   }
+  /* Every swallowing handler feeds one of these. A subsystem with no failures
+     renders a quiet confirmed zero rather than being absent — absence and
+     zero are the confusion the whole panel exists to prevent. */
   for (const [name, s] of Object.entries(sources)) {
     const a = age(s.age_seconds);
+    const badge = s.state === "NEVER_RUN"
+      ? `<span class="notrun">never run</span>`
+      : s.state === "FAILING"
+        ? `<span class="bad">FAILING ×${num(s.consecutive_failures)}</span>`
+        : `<span class="good">OK</span>`;
+    const failLine = s.failures
+      ? `<span class="${s.consecutive_failures ? "bad" : "warn"}">${num(s.failures)} failure${
+          s.failures === 1 ? "" : "s"}${
+          s.last_error_age_seconds !== null && s.last_error_age_seconds !== undefined
+            ? `, last ${age(s.last_error_age_seconds)} ago` : ""}${
+          s.last_error_type ? ` (${esc(s.last_error_type)})` : ""}</span>`
+      : `<span class="dim">0 failures</span>`;
     rows.push(`<div class="kv"><span class="k">${esc(name)}
-        ${s.last_error ? `<br><span class="bad" style="font-size:10px">${esc(s.last_error)}</span>` : ""}</span>
-      <span class="v"><span class="${s.healthy ? "good" : "bad"}">${s.healthy ? "OK" : "STALE"}</span>
-        ${a === null ? NO_DATA("never succeeded") : `<span class="dim">${a} ago</span>`}
-        <br><span class="dim">${num(s.successes)} ok · ${num(s.failures)} fail</span></span></div>`);
+        ${s.last_error ? `<br><span class="dim" style="font-size:10px">${esc(s.last_error)}</span>` : ""}</span>
+      <span class="v">${badge}
+        ${a === null ? "" : `<span class="dim">${a} ago</span>`}
+        <br><span class="dim">${num(s.successes)} ok</span> · ${failLine}</span></div>`);
   }
   const sweep = p.sweep || {};
   rows.push(`<div class="kv"><span class="k">Sweeps completed</span>
@@ -466,6 +548,7 @@ function renderHealth(p) {
     <span class="v num">${age(p.uptime_seconds) ?? NO_DATA("scanner has not started")}</span></div>`);
   rows.push(rssRow(p));
   rows.push(cardinalityRow(p));
+  rows.push(degradedRow(p));
   el.innerHTML = rows.join("");
 }
 
@@ -559,6 +642,38 @@ function cardinalityRow(p) {
       <br><span class="dim">distinct values; growth means the grid changed</span></span>
     <span class="v num ${c.over ? "bad" : "good"}">${num(c.distinct_keys)}
       <br><span class="dim">alerts at ${num(c.alert_at)} · stops at ${num(c.hard_ceiling)}</span></span></div>`;
+}
+
+/* Things that degrade a reading without stopping it. Each is a place where a
+   swallowed exception substituted a plausible value: an unresolved series
+   silently leaves the fee-free universe, an unknown fee_type is silently priced
+   as quadratic, an alert that failed to send is not an alert that did not fire. */
+function degradedRow(p) {
+  const parts = [];
+  const unresolved = p.unresolved_series;
+  if (unresolved && unresolved.length) {
+    parts.push(`<div class="kv"><span class="k">Unresolved series
+        <br><span class="dim">no fee_multiplier — excluded from the fee-free universe</span></span>
+      <span class="v num warn">${num(unresolved.length)}</span></div>`);
+  }
+  const unknown = p.unknown_fee_types;
+  if (unknown && Object.keys(unknown).length) {
+    parts.push(`<div class="kv"><span class="k">Unrecognised fee types
+        <br><span class="dim">priced as quadratic — a substituted number</span></span>
+      <span class="v num bad">${esc(Object.entries(unknown).map(([k, v]) => `${k}×${v}`).join(", "))}</span></div>`);
+  }
+  const undelivered = p.undelivered_alerts;
+  if (undelivered && undelivered.length) {
+    parts.push(`<div class="kv"><span class="k">Alerts that fired but did not send
+        <br><span class="dim">a failed push is not an alert that did not fire</span></span>
+      <span class="v num bad">${num(undelivered.length)}</span></div>`);
+  }
+  if (!parts.length) {
+    return `<div class="kv"><span class="k">Degraded readings
+        <br><span class="dim">substituted values, unresolved metadata, undelivered alerts</span></span>
+      <span class="v num good">0</span></div>`;
+  }
+  return parts.join("");
 }
 
 function rssRow(p) {

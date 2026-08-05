@@ -53,26 +53,99 @@ TREND_PATH = Path("data/monitor/population.jsonl")
 #: sweep that fails partway and leaves a truncated file behind.
 KEEP_LEDGERS = 3
 
-#: --- PROPOSED, NOT SETTLED ------------------------------------------------
+#: --- PROVISIONAL. ITS ORIGINAL ANCHOR WAS RETRACTED. ----------------------
 #: Unattributed markets in one reconciliation before the residual is pushed.
 #:
-#: Rests on two observations, which is not a distribution:
+#: This figure was first justified by "25 would still have fired on the 66
+#: unattributed markets in the first reconciliation". **That anchor is gone.**
+#: The 66 was a classifier artifact: the original `classify` never checked
+#: `open_time`, so markets created before the boundary but not yet tradeable
+#: were filed as unexplained. Corrected attribution puts that reconciliation's
+#: true residual far lower.
 #:
-#:   2026-08-03 -> 2026-08-04 (33.3h, 29,067 moved):    66 unattributed (0.23%)
-#:   2026-08-04 -> 2026-08-05 ( 8.2h, 23,836 moved):     1 unattributed (0.004%)
+#: What remains is a single clean observation:
 #:
-#: 25 sits well above routine noise and would still have fired on the 66 -- the
-#: KXB85/KXB65 case, which was benign but genuinely exchange-side and worth
-#: knowing about. Hourly sweeps move less than either of those gaps, so it is
-#: conservative in the direction of firing.
+#:   2026-08-04 -> 2026-08-05 (8.2h, 23,836 moved):  1 unattributed (0.004%)
 #:
-#: **Flagged for confirmation rather than settled.** The residual rate is
-#: reported alongside the count on every reconciliation, so whether a rate rule
-#: (say 0.1% of moved markets) would serve better is answerable from the archive
-#: rather than from these two points.
+#: One point is not a distribution, and neither is two points plus a retracted
+#: one, so **the threshold is deliberately not re-derived from the corrected
+#: history**. 25 is retained as a provisional figure: comfortably above the one
+#: clean observation, low enough that a structural change would clear it.
+#:
+#: The review is dated rather than left to memory -- see
+#: :data:`THRESHOLD_REVIEW_DUE`. The residual and residual rate are recorded
+#: every sweep, so by then the archive answers it.
 UNATTRIBUTED_ALERT_THRESHOLD = 25
 
+THRESHOLD_STATUS = "provisional"
+
+#: Eight weeks of residual-rate data from the date the anchor was retracted.
+#: A dated item, not an intention. Surfaced on the panel once due.
+THRESHOLD_SET_ON = "2026-08-05"
+THRESHOLD_REVIEW_DUE = "2026-09-30"
+THRESHOLD_REVIEW_REASON = (
+    "The original anchor (66 unattributed) was a classifier artifact and was "
+    "retracted. 25 rests on one clean observation of 1. Review against eight "
+    "weeks of recorded residual rates; decide then whether an absolute count or "
+    "a rate rule is right. Do not re-derive from the corrected history."
+)
+
+
+def threshold_review() -> dict[str, Any]:
+    """The dated review item, and whether it has come due."""
+    due = datetime.fromisoformat(THRESHOLD_REVIEW_DUE).replace(tzinfo=UTC)
+    days = (due - datetime.now(UTC)).days
+    return {
+        "value": UNATTRIBUTED_ALERT_THRESHOLD,
+        "status": THRESHOLD_STATUS,
+        "set_on": THRESHOLD_SET_ON,
+        "review_due": THRESHOLD_REVIEW_DUE,
+        "days_until_due": days,
+        "due": days <= 0,
+        "reason": THRESHOLD_REVIEW_REASON,
+    }
+
 LEDGER_FIELDS = ("ticker", "created_time", "open_time", "close_time", "can_close_early")
+
+#: Time-to-resolution buckets, in hours. **This decides whether growth
+#: compounds.** Growth concentrated under 24h is listing cadence -- recurring
+#: daily and hourly series replacing expired ones, with total open count
+#: plateauing. Growth in the long buckets is genuine exchange expansion and
+#: compounds. The same headline percentage implies completely different
+#: ceilings depending on which it is.
+HORIZON_BUCKETS: tuple[tuple[str, float | None], ...] = (
+    ("<24h", 24),
+    ("1-7d", 24 * 7),
+    ("7-30d", 24 * 30),
+    ("30d-1y", 24 * 365),
+    (">1y", None),
+)
+
+
+def horizon_bucket(close_time: str | None, now: datetime) -> str:
+    """Which resolution bucket a market falls in, or "unknown" without a time."""
+    at = _at_or_none(close_time)
+    if at is None:
+        return "unknown"
+    hours = (at - now).total_seconds() / 3600
+    for name, upper in HORIZON_BUCKETS:
+        if upper is None or hours < upper:
+            return name
+    return HORIZON_BUCKETS[-1][0]
+
+
+def _at_or_none(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def empty_horizons() -> dict[str, int]:
+    """All buckets present at zero, so a missing bucket is never inferred."""
+    return {name: 0 for name, _ in HORIZON_BUCKETS} | {"unknown": 0}
 
 
 @dataclass(frozen=True)
@@ -87,6 +160,11 @@ class Reconciliation:
     added_causes: dict[str, int]
     removed_causes: dict[str, int]
     unattributed: int
+    #: Resolution horizon of the whole current population, and of the markets
+    #: added since the prior sweep. The second is the one that answers whether
+    #: growth compounds.
+    horizons: dict[str, int]
+    added_horizons: dict[str, int]
 
     @property
     def moved(self) -> int:
@@ -116,8 +194,22 @@ class Reconciliation:
             "unattributed": self.unattributed,
             "unattributed_pct": round(self.unattributed_pct, 4),
             "threshold": UNATTRIBUTED_ALERT_THRESHOLD,
+            "threshold_status": THRESHOLD_STATUS,
             "fires": self.fires,
+            "horizons": self.horizons,
+            "added_horizons": self.added_horizons,
+            "added_short_dated_pct": round(self.added_short_dated_pct, 1),
         }
+
+    @property
+    def added_short_dated_pct(self) -> float:
+        """Share of added markets resolving within 24 hours.
+
+        High means listing cadence and a plateauing open count. Low means the
+        long-dated population is growing, and that is what compounds.
+        """
+        added = sum(self.added_horizons.values())
+        return 0.0 if not added else self.added_horizons.get("<24h", 0) * 100 / added
 
 
 class LedgerWriter:
@@ -206,11 +298,16 @@ def reconcile(
     prior_tickers = {row["ticker"] for row in read_ledger(prior_path)}
 
     added_causes: Counter[str] = Counter()
+    horizons: Counter[str] = Counter()
+    added_horizons: Counter[str] = Counter()
     current_tickers: set[str] = set()
     for row in read_ledger(current_path):
         current_tickers.add(row["ticker"])
+        bucket = horizon_bucket(row.get("close_time"), now)
+        horizons[bucket] += 1
         if row["ticker"] not in prior_tickers:
             added_causes[attribute_added(row, prior_captured_at)] += 1
+            added_horizons[bucket] += 1
 
     removed_causes: Counter[str] = Counter()
     for row in read_ledger(prior_path):
@@ -231,6 +328,8 @@ def reconcile(
         added_causes=dict(added_causes),
         removed_causes=dict(removed_causes),
         unattributed=added_causes[UNATTRIBUTED] + removed_causes[UNATTRIBUTED],
+        horizons=empty_horizons() | dict(horizons),
+        added_horizons=empty_horizons() | dict(added_horizons),
     )
 
 
@@ -260,6 +359,11 @@ def record_trend(
                 "added": reconciliation.added,
                 "removed": reconciliation.removed,
                 "unattributed": reconciliation.unattributed,
+                # Recorded per sweep so net change *per bucket* is answerable
+                # from the archive: the headline count cannot distinguish
+                # listing cadence from expansion, and the buckets can.
+                "horizons": reconciliation.horizons,
+                "added_horizons": reconciliation.added_horizons,
             }
         )
     with path.open("a") as fh:
@@ -286,6 +390,11 @@ def render(r: Reconciliation) -> str:
         lines.append(f"    -{n:>7,}  {cause}")
     lines.append(
         f"  unattributed {r.unattributed:,} ({r.unattributed_pct:.3f}% of moved) "
-        f"against a threshold of {UNATTRIBUTED_ALERT_THRESHOLD}"
+        f"against a {THRESHOLD_STATUS} threshold of {UNATTRIBUTED_ALERT_THRESHOLD}"
+    )
+    lines.append(
+        "  added by horizon: "
+        + ", ".join(f"{k} {v:,}" for k, v in r.added_horizons.items() if v)
+        + f"  ({r.added_short_dated_pct:.0f}% resolve within 24h)"
     )
     return "\n".join(lines)

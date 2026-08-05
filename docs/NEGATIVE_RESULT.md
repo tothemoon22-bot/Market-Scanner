@@ -430,19 +430,50 @@ fixtures. An observation is now a distinct capture time for a distinct event,
 and the panel shows sweeps, rows and contracts separately so breadth cannot be
 read as time again. Shipped as a permanent fixture in the false-positive suite.
 
-**5. And the inversion, which is the same insight paying out.** `bid(YES) +
+**5. Defensive handling that converted a hard failure into a silent one.** This
+is a distinct sub-class and the hardest of the set to catch, because unlike the
+others it was produced by a *correct* instinct rather than a modelling error.
+
+The population reconciliation runs inside `try/except` so that a reconciliation
+failure cannot cost a sweep. That is right, and it stays. But the ledger
+filename was parsed with `Path.stem`, which strips one suffix and leaves
+`...Z.csv` on a `.csv.gz` name — so `strptime` would have thrown on every sweep,
+been logged, and been swallowed. The panel would have read **"needs two sweeps
+to compare"** indefinitely while the scanner reported healthy. A permanently
+broken subsystem was indistinguishable from a normal empty state.
+
+Nothing about the handler is wrong. The defect is that the *consequence* of
+catching had no representation: a caught exception left the caller unable to
+distinguish "ran and found nothing" from "did not run". Review does not catch
+this, because the handler reads as good practice on the line where it appears
+and the damage is at a call site that looks fine.
+
+The fix is not to stop catching. It is to make catching produce a state:
+
+- every swallowing handler increments a named failure counter with a timestamp
+  and exception type, surfaced on the health panel; a subsystem with no
+  failures renders a confirmed zero rather than being absent
+- empty states name their cause, and *computed-empty*, *not-yet-run* and
+  *failed-run* are three distinct renderings, not one
+- a subsystem failing three consecutive sweeps pushes on its own account, with
+  no detection threshold involved
+
+Standing question, added alongside the one above: **would a failure in this path
+be visible, or merely logged?**
+
+**6. And the inversion, which is the same insight paying out.** `bid(YES) +
 bid(NO) > 100¢` is impossible in a correctly reconstructed book. That makes it
 worthless as an opportunity detector — and therefore *valuable* as a continuous
 correctness check on our own ingest: observing it means our book is wrong, not
 that the market is. See the venue notes. That reading is only available once you
 have asked what a check's own failure looks like.
 
-Two of the five are inside the monitor's own correctness checks, which is the
-uncomfortable part: the code written specifically to stop the project fooling
-itself is the code most prone to it, because it is written against the same
-mental model as the thing it guards.
+Three of the six are inside the monitor's own correctness and safety machinery,
+which is the uncomfortable part: the code written specifically to stop the
+project fooling itself is the code most prone to it, because it is written
+against the same mental model as the thing it guards.
 
-The common structure in all five: **the check drew its standard of correctness
+Items 1–4 share one structure: **the check drew its standard of correctness
 from the same source as the thing it was checking.** The defence is to source
 the standard independently — the grid from the quoting convention rather than
 from the observed joins, the clock from the client rather than from the payload,
@@ -454,7 +485,46 @@ checks that are vacuously consistent, coverage tools that do not cover
 themselves, secret scanners that log the secret they found, retry logic that
 retries the health check that decides whether to retry.
 
-This is a standing rule now; see `README.md` § "Hard constraints".
+Item 5 is the separate sub-class, and the reason it needs its own name is that
+the first structure does not describe it. Nothing there drew a bad standard —
+the handler was correct. **The instrument was made silent by a decision to be
+robust.** Both questions therefore have to be asked, because neither implies the
+other:
+
+> Does this check share a failure mode with what it checks?
+>
+> Would a failure in this path be visible, or merely logged?
+
+Both are standing rules now; see `README.md` § "Hard constraints".
+
+---
+
+## A measurement note: when the noise floor is the signal
+
+Recorded because it produced a confidently wrong number and was caught only by
+disagreeing with a second method.
+
+Projecting the scanner's memory against market count, the first attempt fitted a
+growth model to **RSS deltas**. Across a 4× range in market count the total moved
+**2.6 MB with ±0.9 MB residuals** — so the residuals were the same order as the
+signal, and the fit was reading allocator arena reuse rather than retention. It
+extrapolated to a ceiling at *15 million markets*, which is not a number about
+Kalshi.
+
+Direct byte counting over the same range gave **404 MB per million markets with
+±1.8 MB residuals against 21 MB of signal** — a signal-to-noise ratio an order of
+magnitude better, and a projection that survives contact with the anchor
+measurement.
+
+> **When a measurement's noise floor is the same order as its signal, the fit
+> describes the instrument rather than the subject.**
+
+This belongs with the section above rather than beside it. The failure is not
+that RSS is the wrong quantity — RSS is exactly the quantity that matters, and
+it is still what anchors the projection. The failure is using a *method* whose
+resolution was never checked against the effect being measured. The defence is
+the same shape as the others: get the number a second way, from a source with
+different failure modes, before believing the first.
 
 ---
 

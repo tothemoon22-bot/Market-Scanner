@@ -151,6 +151,28 @@ main { padding: 0.75rem; display: flex; flex-direction: column; gap: 0.75rem; }
   letter-spacing: 0.1em;
   text-transform: uppercase;
 }
+/* NOT RUN and FAILED are not NO DATA. Three states, three marks: a dashed
+   neutral chip for unmeasured, a dotted chip for not-yet-attempted, a solid red
+   chip for attempted-and-threw. */
+.notrun,
+.failed {
+  display: inline-block;
+  padding: 0.05rem 0.35rem;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.notrun {
+  background: var(--nodata-bg);
+  color: var(--ink-faint);
+  border: 1px dotted var(--ink-faint);
+}
+.failed {
+  background: var(--nodata-bg);
+  color: var(--red);
+  border: 1px solid var(--red);
+}
+
 .nodata-block {
   padding: 0.8rem 0.6rem;
   color: var(--nodata);
@@ -195,6 +217,10 @@ main { padding: 0.75rem; display: flex; flex-direction: column; gap: 0.75rem; }
     var(--nodata) 2px, var(--nodata) 3px);
   opacity: 0.35;
 }
+
+/* Wide content scrolls inside its own box; the page body never scrolls
+   sideways at 390px. */
+.scroll-x { overflow-x: auto; }
 
 /* --- population trend ---------------------------------------------------- */
 .trend {

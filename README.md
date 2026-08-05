@@ -55,11 +55,17 @@ held a credential; every measurement here came from public endpoints.
    needed. `tools/secret_scan.py` runs pre-commit regardless.
 4. **When building a check, ask whether the check shares a failure mode with
    what it checks.** Freshness monitors that go stale, gap detectors with gaps,
-   consistency checks that are vacuously consistent. Every check that broke here
-   broke that way; the defence is to source the standard of correctness from
-   somewhere other than the thing under test. See
-   [`docs/NEGATIVE_RESULT.md`](docs/NEGATIVE_RESULT.md) § "The one pattern
-   behind every broken check".
+   consistency checks that are vacuously consistent. The defence is to source
+   the standard of correctness from somewhere other than the thing under test.
+5. **Ask whether a failure in this path would be visible, or merely logged.**
+   A `try/except` that keeps a subsystem from killing a sweep is right, and it
+   is also how a permanently broken subsystem comes to look like a normal empty
+   state. Catching must produce a state: a named failure counter, an empty that
+   says which of *computed-empty*, *not-yet-run* or *failed-run* it is, and a
+   push when a subsystem is down for three sweeps running.
+
+   Both questions, in [`docs/NEGATIVE_RESULT.md`](docs/NEGATIVE_RESULT.md)
+   § "The one pattern behind every broken check".
 
 ## Start here
 

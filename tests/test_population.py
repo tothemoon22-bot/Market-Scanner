@@ -284,6 +284,130 @@ def test_trend_omits_reconciliation_keys_rather_than_zeroing_them(tmp_path):
     assert "added" not in point and "unattributed" not in point
 
 
+# -------------------------------------------------------- horizon buckets --
+
+
+@pytest.mark.parametrize(
+    "hours,expected",
+    [
+        (0.5, "<24h"),
+        (23.9, "<24h"),
+        (24.0, "1-7d"),
+        (24 * 6, "1-7d"),
+        (24 * 7, "7-30d"),
+        (24 * 29, "7-30d"),
+        (24 * 30, "30d-1y"),
+        (24 * 364, "30d-1y"),
+        (24 * 365, ">1y"),
+        (24 * 3000, ">1y"),
+    ],
+)
+def test_horizon_buckets_have_no_gaps_or_overlaps(hours, expected):
+    """A market lands in exactly one bucket, and the boundaries do not double-count."""
+    close = (NOW + timedelta(hours=hours)).isoformat()
+    assert population.horizon_bucket(close, NOW) == expected
+
+
+def test_a_market_without_a_close_time_is_unknown_rather_than_bucketed():
+    assert population.horizon_bucket(None, NOW) == "unknown"
+    assert population.horizon_bucket("", NOW) == "unknown"
+    assert population.horizon_bucket("not-a-date", NOW) == "unknown"
+
+
+def test_all_buckets_are_present_at_zero_so_a_missing_one_is_never_inferred():
+    empty = population.empty_horizons()
+    assert set(empty) == {name for name, _ in population.HORIZON_BUCKETS} | {"unknown"}
+    assert all(v == 0 for v in empty.values())
+
+
+def test_growth_in_short_and_long_buckets_is_distinguishable(tmp_path):
+    """The decisive distinction: cadence plateaus, expansion compounds.
+
+    Measured on the real 77,047 -> 84,625 move, 97.1% of net growth was
+    sub-7-day. This asserts the machinery can tell the two apart at all.
+    """
+    prior = _ledger(tmp_path / "a.csv.gz", [
+        {"ticker": "OLD-1", "close_time": (NOW + timedelta(days=200)).isoformat()},
+    ])
+    current = _ledger(tmp_path / "b.csv.gz", [
+        {"ticker": "OLD-1", "close_time": (NOW + timedelta(days=200)).isoformat()},
+        # Three daily markets and one long-dated one.
+        *[{"ticker": f"DAILY-{i}", "created_time": "2026-08-04T22:00:00Z",
+           "close_time": (NOW + timedelta(hours=6)).isoformat()} for i in range(3)],
+        {"ticker": "LONG-1", "created_time": "2026-08-04T22:00:00Z",
+         "close_time": (NOW + timedelta(days=400)).isoformat()},
+    ])
+    r = population.reconcile(prior, current, BOUNDARY, NOW)
+
+    assert r.added == 4
+    assert r.added_horizons["<24h"] == 3
+    assert r.added_horizons[">1y"] == 1
+    assert r.added_short_dated_pct == 75.0
+    # The whole population is a different shape from what was added.
+    assert r.horizons["30d-1y"] == 1 and r.horizons["<24h"] == 3
+
+
+def test_horizons_are_recorded_per_sweep_so_net_change_is_answerable(tmp_path):
+    """One count cannot separate cadence from expansion; the archive can."""
+    path = tmp_path / "population.jsonl"
+    prior = _ledger(tmp_path / "a.csv.gz", [{"ticker": "GONE-1"}])
+    current = _ledger(tmp_path / "b.csv.gz", [
+        {"ticker": "NEW-1", "created_time": "2026-08-04T22:00:00Z",
+         "close_time": (NOW + timedelta(hours=2)).isoformat()},
+    ])
+    r = population.reconcile(prior, current, BOUNDARY, NOW)
+    population.record_trend(NOW, 84240, 54074, r, path)
+    point = population.trend(path)[0]
+    assert point["horizons"]["<24h"] == 1
+    assert point["added_horizons"]["<24h"] == 1
+
+
+# ------------------------------------------------------ provisional threshold --
+
+
+def test_the_threshold_is_recorded_as_provisional_with_its_reason():
+    """Its original anchor was retracted, and the record has to say so."""
+    review = population.threshold_review()
+    assert review["status"] == "provisional"
+    assert review["value"] == population.UNATTRIBUTED_ALERT_THRESHOLD
+    assert "retracted" in review["reason"]
+    assert "Do not re-derive" in review["reason"]
+
+
+def test_the_threshold_review_is_a_dated_item_not_an_intention():
+    review = population.threshold_review()
+    due = datetime.fromisoformat(review["review_due"]).replace(tzinfo=UTC)
+    set_on = datetime.fromisoformat(review["set_on"]).replace(tzinfo=UTC)
+    assert (due - set_on).days >= 8 * 7, "eight weeks of residual-rate data"
+    assert isinstance(review["days_until_due"], int)
+    assert review["due"] == (review["days_until_due"] <= 0)
+
+
+def test_the_reconciliation_payload_carries_the_provisional_marker(tmp_path):
+    """A threshold shown without its status reads as settled."""
+    prior = _ledger(tmp_path / "a.csv.gz", [{"ticker": "GONE-1"}])
+    current = _ledger(tmp_path / "b.csv.gz", [{"ticker": "NEW-1"}])
+    payload = population.reconcile(prior, current, BOUNDARY, NOW).as_dict()
+    assert payload["threshold_status"] == "provisional"
+
+
+def test_the_retracted_anchor_is_not_used_to_justify_the_threshold():
+    """The 66 was a classifier artifact. It must not read as evidence.
+
+    Quoting the retracted claim in order to retract it is not asserting it, so
+    the check is that the retraction follows the quote -- banning the phrase
+    outright would fail on the very sentence that withdraws it.
+    """
+    source = Path("monitor/population.py").read_text()
+    block = source.split("UNATTRIBUTED_ALERT_THRESHOLD = ")[0]
+    assert "classifier artifact" in block
+
+    quote = block.index("would still have fired on the 66")
+    retraction = block.index("That anchor is gone")
+    assert retraction > quote, "the claim must be withdrawn where it is quoted"
+    assert block.index("single clean observation") > retraction
+
+
 def test_the_dashboard_reads_the_residual_and_not_the_delta():
     js = Path("dashboard/static/app.js").read_text()
     assert "renderPopulation" in js
