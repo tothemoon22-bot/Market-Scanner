@@ -48,7 +48,7 @@ def seed_from_snapshot(path: Path) -> None:
     computed = metrics.compute(rows)
     state.metrics = computed
     state.metrics_at = now()
-    state.triggers = [t.__dict__ for t in triggers.evaluate(baseline, computed)]
+    state.triggers = [t.as_dict() for t in triggers.evaluate(baseline, computed)]
     state.funnel = funnel.as_dict(funnel.build(rows))
     state.partitions = computed["verified_partitions"]["fee_free_detail"]
     state.tripwire = computed["deci_cent_fee_free_tripwire"]

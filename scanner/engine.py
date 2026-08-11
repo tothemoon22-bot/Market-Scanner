@@ -123,7 +123,7 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
             state.metrics_at = now()
             state.sweep_count += 1
             state.sweep_seconds = time.monotonic() - started
-            state.triggers = [t.__dict__ for t in triggers.evaluate(baseline, computed)]
+            state.triggers = [t.as_dict() for t in triggers.evaluate(baseline, computed)]
             funnel.unknown_fee_types.clear()
             state.funnel = funnel.as_dict(funnel.build_from(agg))
             state.unknown_fee_types = dict(funnel.unknown_fee_types)
@@ -214,7 +214,7 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
             }
 
             fired = assessment.alerts
-            state.triggers = [t.__dict__ for t in triggers.evaluate(baseline, computed, bands)]
+            state.triggers = [t.as_dict() for t in triggers.evaluate(baseline, computed, bands)]
 
             hits = collect.rate_limit_hits
             if hits > state.rate_limit_hits:

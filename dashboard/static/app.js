@@ -94,18 +94,35 @@ function renderHero(p) {
       `sweep ${age(p.metrics_age_seconds)} ago`;
   }
 
+  /* Rank only triggers that have BOTH a distance and a reading. A trigger with
+     a distance but no value is not a measurement of anything, and one used to
+     sit here at 100% showing NO DATA, displacing triggers that were actually
+     being watched. Unmeasured ones are listed below rather than dropped —
+     absent and zero must not look alike. */
   const triggers = p.triggers || [];
-  const measurable = triggers.filter((t) => t.proximity_pct !== null);
-  const closest = measurable.length
-    ? measurable.reduce((a, b) => (Number(a.proximity_pct) >= Number(b.proximity_pct) ? a : b))
+  const measured = triggers.filter((t) => t.measured);
+  const unmeasured = triggers.filter((t) => !t.measured);
+  const closest = measured.length
+    ? measured.reduce((a, b) => (Number(a.proximity_pct) >= Number(b.proximity_pct) ? a : b))
     : null;
 
   $("hero-closest").innerHTML = closest
-    ? `<b>${esc(closest.label)}</b> — ${closest.value === null ? NO_DATA(closest.no_data_reason)
-        : esc(closest.value) + " " + esc(closest.unit)} — ` +
+    ? `<b>${esc(closest.label)}</b> — ${esc(closest.value)} ${esc(closest.unit)} — ` +
       `<span class="num ${Number(closest.proximity_pct) >= 20 ? "warn" : ""}">` +
-      `${closest.proximity_pct}%</span> to fire`
-    : NO_DATA("no trigger has a measurable distance yet");
+      `${closest.proximity_pct}%</span> to fire` +
+      (closest.detail && closest.detail.fired_because
+        ? ` <span class="dim">(${esc(closest.detail.fired_because)})</span>` : "")
+    : NO_DATA(
+        measured.length === 0 && triggers.length
+          ? "no trigger has both a reading and a distance yet"
+          : "no sweep has completed yet");
+
+  $("hero-unmeasured").innerHTML = unmeasured.length
+    ? `<span class="dim">not ranked, no reading:</span> ` +
+      unmeasured.map((t) =>
+        `<span class="chip warn" title="${esc(t.no_data_reason || "no reason recorded")}">` +
+        `${esc(t.label)}</span>`).join(" ")
+    : `<span class="dim">all ${num(triggers.length)} triggers measured</span>`;
 
   const w = p.proximity_watch;
   if (!w || w.peak_proximity_pct === null || w.peak_proximity_pct === undefined) {

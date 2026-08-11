@@ -57,6 +57,22 @@ class Trigger:
     def has_distance(self) -> bool:
         return self.proximity_pct is not None
 
+    @property
+    def measured(self) -> bool:
+        """Rankable only when both the distance *and* the reading exist.
+
+        A trigger with a distance but no value is not a measurement of
+        anything: it once let a NO DATA trigger sit in the hero at 100% and
+        displace triggers that had actual readings. `has_distance` alone is not
+        the right gate for the hero.
+        """
+        return self.proximity_pct is not None and self.value is not None
+
+    def as_dict(self) -> dict[str, Any]:
+        """Payload shape. `measured` is computed here so the client cannot
+        re-derive it differently."""
+        return {**self.__dict__, "measured": self.measured, "has_distance": self.has_distance}
+
 
 def _proximity(value: D, baseline: D, threshold: D) -> tuple[str | None, str]:
     """Fraction of the way from baseline to threshold, as a percentage string."""
@@ -77,27 +93,69 @@ def evaluate(baseline: dict, current: dict, bands: dict | None = None) -> list[T
     out: list[Trigger] = []
 
     # 1 --- tick structure -------------------------------------------------
+    # Drift is measured over the *union* of structures, with an absent side
+    # seeded at 0. A structure the baseline does not list had a baseline share
+    # of zero -- that is its true prior value, not a fabricated one, so the
+    # arrival of a new structure gives drift something to compare against
+    # instead of blanking the reading.
+    #
+    # Previously a changed set left `value=None` while proximity said 100, so
+    # the trigger sat in the hero as "NO DATA - 100% to fire" and displaced
+    # measured triggers. A fired trigger still reports its measurement.
     base_ticks = _get(baseline, "tick_structure", default={})
     cur_ticks = _get(current, "tick_structure", default={})
-    set_changed = set(base_ticks) != set(cur_ticks)
+    added = sorted(set(cur_ticks) - set(base_ticks))
+    removed = sorted(set(base_ticks) - set(cur_ticks))
+    set_changed = bool(added or removed)
+
+    def _share(ticks: dict, name: str) -> D:
+        entry = ticks.get(name)
+        return D(entry["share_pct"]) if entry else D(0)
+
     drift = D(0)
-    if not set_changed:
-        for name in base_ticks:
-            moved = abs(D(cur_ticks[name]["share_pct"]) - D(base_ticks[name]["share_pct"]))
-            drift = max(drift, moved)
+    for name in set(base_ticks) | set(cur_ticks):
+        drift = max(drift, abs(_share(cur_ticks, name) - _share(base_ticks, name)))
+
+    tick_measurable = bool(base_ticks) and bool(cur_ticks)
+    tick_fired = set_changed or drift >= 5
     out.append(
         Trigger(
             key="tick_structure",
             label="Tick structure",
-            value=None if set_changed else str(drift),
+            value=str(drift) if tick_measurable else None,
             unit="pp drift",
             baseline="0",
             threshold="5",
             condition="set changes, or any structure's share moves 5pp",
-            proximity_pct=_binary(True) if set_changed else _proximity(D(5) - drift, D(5), D(0))[0],
-            fired=set_changed or drift >= 5,
+            proximity_pct=(
+                None
+                if not tick_measurable
+                else _binary(True)
+                if tick_fired
+                else _proximity(D(5) - drift, D(5), D(0))[0]
+            ),
+            fired=tick_fired,
             memo_section="Finding 4 - the falsifier fired",
-            detail={"structures": sorted(cur_ticks)},
+            no_data_reason=(
+                "" if tick_measurable else "no tick-structure mix recorded on one side"
+            ),
+            detail={
+                "structures": sorted(cur_ticks),
+                "added": added,
+                "removed": removed,
+                # Named so a 100% reading has a visible cause: the set changing
+                # is a different event from the share drifting, and the drift
+                # figure alone would not explain the firing.
+                "fired_because": (
+                    f"new tick structure: {', '.join(added)}"
+                    if added
+                    else f"tick structure gone: {', '.join(removed)}"
+                    if removed
+                    else f"share moved {drift}pp"
+                    if tick_fired
+                    else ""
+                ),
+            },
         )
     )
 
@@ -251,8 +309,18 @@ def evaluate(baseline: dict, current: dict, bands: dict | None = None) -> list[T
 
 
 def closest(triggers: list[Trigger]) -> Trigger | None:
-    """The trigger nearest to firing, for the hero. None if none is measurable."""
-    measurable = [t for t in triggers if t.has_distance]
-    if not measurable:
+    """The closest *measured* trigger, for the hero. None if none is measured.
+
+    Unmeasured triggers are excluded rather than ranked. They are not at 0% and
+    they are not at 100%; they are not on the scale, and putting one in the hero
+    slot hides the closest thing actually being watched.
+    """
+    measured = [t for t in triggers if t.measured]
+    if not measured:
         return None
-    return max(measurable, key=lambda t: D(t.proximity_pct or "0"))
+    return max(measured, key=lambda t: D(t.proximity_pct or "0"))
+
+
+def unmeasured(triggers: list[Trigger]) -> list[Trigger]:
+    """Triggers with no reading, listed separately so they are not just absent."""
+    return [t for t in triggers if not t.measured]
