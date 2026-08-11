@@ -63,12 +63,17 @@ reaches the shared stages directly and that both pass identical keyword sets —
 the check that would have caught the original bug, since equal outputs on one
 fixture would not have.
 
-**Durability, flagged not fixed.** Partition history, band transitions and the
-suppression ledger are written only by the scanner. The weekly job runs from a
-fresh checkout with no prior state, so it *cannot* accumulate them — the
-scanner's persistent disk is the only copy. `DEPLOY.md` says the archive has to
-survive the instance; snapshots and metrics do, and this history does not.
-Backing it up is a hosting decision, not a code change.
+**Durability — decided.** Partition history, band transitions, the suppression
+ledger and the population trend are written only by the scanner, and the weekly
+job cannot accumulate them from a fresh checkout. The scanner now exposes them
+on a read-only unauthenticated endpoint and the weekly Action pulls and commits
+them to `archive/ledgers/`.
+
+The direction is the point: the Action already holds repository write
+permission, so **the box gains nothing that could be taken from it** and the
+no-credentials property survives intact. Instance loss now costs **at most one
+week** of ledger history — stated as a bound rather than described as durable.
+See [`../docs/DEPLOY.md`](../docs/DEPLOY.md) § "Ledger durability".
 
 ## Relationship to the live scanner
 

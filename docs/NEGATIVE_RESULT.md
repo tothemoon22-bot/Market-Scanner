@@ -15,28 +15,45 @@ once: the tick is 0.1¢ instead of 1¢, and the trading fee is exactly zero.
 Three of them form verified-exhaustive partitions — sets of contracts that must
 sum to $1 by construction, whatever happens in the world.
 
-| Partition | Legs | Sum of asks |
+> **In that segment, across every observation on record, no verified partition
+> has ever presented executable edge at a size of one contract.**
+
+That is the finding. It is a claim about *executability*, and it is the claim
+that has survived contact with the data.
+
+Observed cost across the monitored window, three observations per partition
+(2026-08-03, 08-04, 08-05):
+
+| Partition | Legs | Range observed |
 | --- | --- | --- |
-| BTC price range, end of 2026 | 28 | 105.2¢ |
-| ETH price range, end of 2026 | 18 | 107.8¢ |
-| US GDP growth 2026 | 14 | 100.3¢ |
+| BTC price range, end of 2026 | 28 | 100.5¢ – 107.8¢ |
+| ETH price range, end of 2026 | 18 | 106.7¢ – 114.5¢ |
+| US GDP growth 2026 | 14 | **98.0¢** – 106.3¢ |
 
-All three cost **more** than the dollar they are guaranteed to pay. In the one
-corner of the exchange where every known obstacle has been removed, the trade is
-still a loss. That is the finding in one table.
+Most of that range sits above par, which is the ordinary case: the basket costs
+more than the dollar it is guaranteed to pay, so the trade is a loss before it
+starts. **One excursion went below.** On 2026-08-05 the GDP partition was
+measured at 98.0¢ — and its binding leg quoted **less than one contract**, so
+tradeable capacity at the `size ≥ 1` gate was zero. Below par, and unbuyable.
 
-> **Update, 2026-08-05 — the tripwire has since fired once, on zero capacity.**
-> `KXGDPYEAR-26` was measured at **98.00¢**, below par, in this same
-> intersection. Its binding leg quotes **less than one contract**, so tradeable
-> capacity at the `size ≥ 1` gate is **zero**: the basket is below par and
-> cannot be bought. The other two remained above par (100.50¢ and 106.70¢).
->
-> This is the behaviour § "First dynamics" describes rather than a new
-> phenomenon — these partitions drift across par, and capacity is the filter
-> that survives. It is recorded here because the sentence above is stated in the
-> present tense and, taken literally, one of the three no longer satisfies it.
-> **The claim that survives is the one about executable capacity, not the one
-> about price.**
+### The excursion is stronger evidence than its absence would have been
+
+This is worth stating plainly, because it inverts how the result reads.
+
+"These baskets never price below par" is an argument from absence. It is only
+ever as strong as the observation window, and every additional day it survives
+adds very little — while a single counterexample would end it.
+
+"These baskets went below par, and it still produced nothing executable" is an
+observation. The falsifying condition *occurred*, under the most favourable
+circumstances the exchange offers, and the finding held anyway — not because the
+price stayed on the right side of a line, but because the capacity was not
+there. **The tripwire firing improved this result rather than damaging it.**
+
+That is also why the headline is phrased on capacity rather than on price. Price
+was the weaker of the two available claims, and it has since been falsified while
+the finding survived. See § "Phantom liquidity is a cause, not a filter" for why
+the two are connected rather than merely both true.
 
 ---
 
@@ -192,6 +209,30 @@ three-way football markets are also not where a partition arbitrage lives.
 The trigger fired correctly and this is what it is for — the tick-structure set
 changing is the one thing Finding 4 said would need re-examination.
 
+### The falsifier track record
+
+Worth stating explicitly, because a reader a year from now cannot reconstruct it
+from the raw data and it changes how much weight this document deserves.
+
+The original analysis listed conditions that would overturn the conclusion. **Two
+of them have now occurred. The conclusion survived both.**
+
+| Falsifier | Fired | What happened | Conclusion |
+| --- | --- | --- | --- |
+| Sub-cent tick sizes appear | 2026-08-03 | Already true — 12.6% of the exchange, and `tapered_deci_cent` puts its fine tick exactly in the tails where the fee gate is easiest to clear | survived |
+| The tick-structure set changes | 2026-08-05 | `center_half_edge_half_cent` appeared, 30 markets on a half-cent grid | survived |
+| A verified partition prices below par in the deci-cent ∩ fee-free segment | 2026-08-05 | `KXGDPYEAR-26` at 98.0¢, binding leg under one contract | survived |
+
+**A falsifier list that has fired three times without moving the conclusion is a
+materially stronger position than an untested one.** An untested falsifier list
+is a promise; a fired one is evidence. The first two fired in the most favourable
+locations the exchange offers — the finest tick, and then a *new* finer tick —
+and the third fired on the exact condition named as the cleanest possible
+counterexample.
+
+None of this makes the conclusion permanent. It makes it *tested*, which is a
+different and better claim than untested agreement with the data.
+
 ---
 
 ## Finding 5 — the two below-par results, and why capacity is the point
@@ -212,6 +253,58 @@ Annualization is the second filter. Both returns sit an order of magnitude below
 any threshold worth the operational risk, because the fee-free series are
 long-dated: a 5¢ credit locked for 3.6 years is not the same instrument as a 5¢
 credit locked for a week.
+
+---
+
+## Phantom liquidity is a cause, not a filter
+
+This is the most consequential correction in the document for anyone repeating
+the study, and it took two observations a day apart to see it.
+
+| Observation | Cost | Binding leg size |
+| --- | --- | --- |
+| `KXGDPYEAR-33`, baseline 2026-08-03 | 91¢ — 9¢ below par | **0.01 contracts** |
+| `KXGDPYEAR-26`, 2026-08-05 | 98¢ — 2¢ below par | **under 1 contract** |
+
+Two deepest-discount observations in the fee-free universe. Both unbuyable. That
+is not a coincidence, and treating it as one is the mistake.
+
+**Kalshi quotes accept fractional size, down to 0.01 contracts.** The best offer
+sets the displayed price whether it is backed by a thousand contracts or by one
+hundredth of one. So a leg whose only resting offer is fractional contributes
+its price to the basket total while contributing essentially no capacity — and
+because such an offer costs almost nothing to leave sitting, it can sit at a
+level a real offer would not.
+
+The causality therefore runs the other way from the intuitive reading:
+
+> **Fractional quoting does not merely fail to remove a below-par price. It is
+> among the reasons the price is below par in the first place.**
+
+The consequence generalizes past this venue:
+
+> **In a market with fractional quote granularity, a price below par carries no
+> information on its own.** The `size ≥ 1` gate is not prudence applied after
+> the fact — it is a precondition for the price reading to mean anything. Any
+> study of this exchange that reads prices without a size gate is measuring
+> quoting minimums and reporting them as mispricings.
+
+That is why the headline of this document is stated on executable capacity
+rather than on price, and why Finding 5's capacity column is the finding rather
+than a caveat to it.
+
+### The same story as spread compression, from the other side
+
+§ "First dynamics" shows below-par crossings arriving from the *width* of the
+basket collapsing rather than from its fair value moving. This section shows the
+deepest excursions arriving from *who is quoting* rather than from what the
+structure is worth.
+
+Both say the same thing about the same events: **below-par excursions in this
+segment are artifacts of how the book is quoted, not signals about what the
+contracts are worth.** One is about the spread's arithmetic, the other about the
+size behind it. Neither leaves room for a reading in which the discount is
+information.
 
 ---
 

@@ -548,6 +548,7 @@ function renderHealth(p) {
     <span class="v num">${age(p.uptime_seconds) ?? NO_DATA("scanner has not started")}</span></div>`);
   rows.push(rssRow(p));
   rows.push(cardinalityRow(p));
+  rows.push(archiveRow(p));
   rows.push(degradedRow(p));
   el.innerHTML = rows.join("");
 }
@@ -674,6 +675,23 @@ function degradedRow(p) {
       <span class="v num good">0</span></div>`;
   }
   return parts.join("");
+}
+
+/* The scanner cannot see the weekly Action, but it can see the fetch. An Action
+   that stops running shows here as a growing age rather than only in a workflow
+   history nobody reads — and the age is what bounds how much ledger history an
+   instance loss would cost. */
+function archiveRow(p) {
+  const a = p.ledger_archive;
+  if (!a || a.age_seconds === null || a.age_seconds === undefined) {
+    return `<div class="kv"><span class="k">Ledger archive
+        <br><span class="dim">weekly job pulls; the box holds no credential</span></span>
+      <span class="v">${NOT_RUN("no archive fetch has been served yet")}</span></div>`;
+  }
+  return `<div class="kv"><span class="k">Ledger archive
+      <br><span class="dim">history at risk = time since this fetch</span></span>
+    <span class="v num ${a.stale ? "bad" : "good"}">${age(a.age_seconds)} ago
+      <br><span class="dim">stale past ${num(a.stale_after_days)}d</span></span></div>`;
 }
 
 function rssRow(p) {

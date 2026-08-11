@@ -15,6 +15,7 @@ from typing import Any
 
 from monitor import reviews
 from monitor.aggregate import ALERT_DISTINCT_SPREADS, MAX_DISTINCT_SPREADS
+from monitor.archive import ARCHIVE_STALE_AFTER_DAYS
 from scanner import process
 
 #: Beyond this the dashboard treats the scanner as offline rather than quiet.
@@ -52,6 +53,7 @@ SUBSYSTEMS = (
     "binance_vision",
     "coinbase",
     "ntfy",
+    "ledger_archive",
 )
 
 #: Consecutive failures of one subsystem before it pushes on its own account,
@@ -192,6 +194,12 @@ class ScannerState:
     #: coefficient, so its silence has to be positively confirmed.
     fee_changes: dict[str, Any] | None = None
 
+    #: Last time the weekly archive job pulled the ledgers. The scanner cannot
+    #: see the Action, but it can see the fetch -- so an Action that stops
+    #: running shows as a growing age on the panel rather than only in a
+    #: workflow history nobody reads.
+    ledgers_served_at: datetime | None = None
+
     #: Markets whose fee model is unknown because their series is not in the
     #: registry. "Unknown" is not "not fee-free": the registry is not a complete
     #: enumeration of the swept universe, so a fee-free series could sit here.
@@ -323,6 +331,18 @@ class ScannerState:
                 "manual_reviews": reviews.status(since=self.started_at),
                 "unresolved_series": self.unresolved_series,
                 "fee_model_exposure": self.fee_model_exposure,
+                "ledger_archive": {
+                    "last_served": (
+                        self.ledgers_served_at.isoformat() if self.ledgers_served_at else None
+                    ),
+                    "age_seconds": _age(self.ledgers_served_at),
+                    "stale_after_days": ARCHIVE_STALE_AFTER_DAYS,
+                    "stale": (
+                        self.ledgers_served_at is not None
+                        and (_age(self.ledgers_served_at) or 0)
+                        > ARCHIVE_STALE_AFTER_DAYS * 86400
+                    ),
+                },
                 "undelivered_alerts": self.undelivered_alerts,
                 "unknown_fee_types": self.unknown_fee_types,
                 "failing_subsystems": [

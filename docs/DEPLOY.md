@@ -223,6 +223,61 @@ scanner.example.com {
 `GET /api/health` returns 503 when the scanner has gone quiet, so it works
 directly as a supervisor or uptime-monitor check.
 
+## Ledger durability — the Action pulls, the box holds no credential
+
+Partition history, band transitions, the suppression ledger and the population
+trend are written **only** by the scanner, on its own disk. The weekly job runs
+from a fresh checkout and cannot accumulate them, so without this they would not
+survive instance loss.
+
+The scanner exposes them on a read-only, unauthenticated endpoint and the weekly
+GitHub Action fetches and commits them to `archive/ledgers/`:
+
+```
+GET /api/ledgers          manifest: name, bytes, lines, sha256
+GET /api/ledgers/<name>   one ledger, allowlisted names only
+```
+
+**The direction is the security property.** The Action already holds repository
+write permission, so pulling costs the box nothing. Pushing *from* the box would
+have meant putting a repository credential on a machine whose entire design is
+that it holds none — the startup guard exits non-zero if one appears.
+
+Set `SCANNER_URL` as a repository **variable**, not a secret: the endpoint is
+public by design. Ledger contents are market statistics — no credentials, no
+positions, no personal data.
+
+### What instance loss actually costs
+
+> **At most one week of ledger history**, bounded by the schedule. Not zero.
+
+Say it that way rather than calling the ledgers durable. Everything since the
+last successful Monday fetch is on one disk and nowhere else. Snapshots and
+`metrics.json` are unaffected — those the weekly job produces itself.
+
+Restoring onto a fresh box is a copy back:
+
+```bash
+mkdir -p data/monitor
+for f in archive/ledgers/*.jsonl; do
+  case "$(basename "$f")" in
+    population_trend.jsonl) cp "$f" data/monitor/population.jsonl ;;
+    *)                      cp "$f" data/monitor/$(basename "$f") ;;
+  esac
+done
+```
+
+Band observation counts resume from the restored history; nothing re-announces,
+because the band-events ledger carries the transitions already recorded.
+
+### If the Action stops running
+
+The scanner cannot see the Action, but it can see the fetch. Every request to
+`/api/ledgers` stamps the state, and the health panel shows **Ledger archive —
+N ago**, turning red past 10 days. A weekly job that has not run in ten days is
+not late, it is broken, and the age on the panel is exactly the quantity at
+risk.
+
 ## The weekly baseline job stays where it is
 
 The committed-baseline job runs on GitHub Actions, not on this box, and that

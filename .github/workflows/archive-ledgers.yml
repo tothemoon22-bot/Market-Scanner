@@ -1,0 +1,52 @@
+# Ledger durability: the Action pulls, the box holds no credential.
+#
+# Partition history, band transitions, the suppression ledger and the population
+# trend live only on the scanner's disk. This job fetches them over the
+# scanner's read-only endpoint and commits them, so instance loss costs at most
+# one week of ledger history rather than all of it.
+#
+# The direction matters: this workflow already has repository write permission,
+# so pulling costs the box nothing. Pushing from the box would have meant
+# putting a repository credential on a machine whose whole design is that it
+# holds none.
+name: Archive scanner ledgers
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"   # Mondays 06:17 UTC, offset off the hour
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    # SCANNER_URL is a repository variable, not a secret: it is a public,
+    # unauthenticated read-only endpoint. Nothing here is confidential.
+    if: vars.SCANNER_URL != ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install httpx
+
+      # Fails the job on any transport or digest mismatch. A silent partial
+      # archive is worse than a failed one.
+      - name: Fetch ledgers from the scanner
+        run: python -m monitor.archive --from "${{ vars.SCANNER_URL }}"
+
+      - name: Commit whatever changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add archive/ledgers
+          if git diff --cached --quiet; then
+            echo "no ledger changes this week"
+            exit 0
+          fi
+          git commit -m "Archive scanner ledgers $(date -u +%Y-%m-%d)"
+          git push

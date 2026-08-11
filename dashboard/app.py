@@ -21,10 +21,10 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from monitor import collect, metrics
+from monitor import archive, collect, metrics
 from scanner import engine, funnel, guard, triggers
 from scanner.state import ScannerState, now
 
@@ -79,6 +79,36 @@ async def api_health() -> JSONResponse:
         {"online": body["online"], "ready": body["ready"], "uptime": body["uptime_seconds"]},
         status_code=200 if body["online"] else 503,
     )
+
+
+@app.get("/api/ledgers")
+async def api_ledgers() -> JSONResponse:
+    """Manifest of the durable ledgers, for the weekly archive job.
+
+    Read-only and unauthenticated by design: the weekly GitHub Action pulls
+    these and commits them, so the box never holds a repository credential. The
+    contents are market statistics -- no credentials, no positions, no personal
+    data.
+    """
+    state.ledgers_served_at = now()
+    return JSONResponse({"ledgers": archive.manifest(), "served_at": now().isoformat()})
+
+
+@app.get("/api/ledgers/{name}")
+async def api_ledger(name: str) -> Any:
+    """One ledger, by allowlisted name.
+
+    **The name indexes a fixed dict; it is never joined onto a path.** This
+    endpoint is unauthenticated, and joining a caller-supplied name onto
+    `data/monitor/` would let a caller escape the directory.
+    """
+    path = archive.LEDGER_FILES.get(name)
+    if path is None:
+        return JSONResponse({"error": "unknown ledger"}, status_code=404)
+    if not path.exists():
+        return JSONResponse({"error": "ledger not yet written"}, status_code=404)
+    state.ledgers_served_at = now()
+    return PlainTextResponse(path.read_text())
 
 
 @app.websocket("/ws")

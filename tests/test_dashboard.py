@@ -181,6 +181,10 @@ def test_funnel_fee_gate_uses_the_real_fee_model(rows):
 # --------------------------------------------------------------------------
 # No synthetic values, no credentials, no orders -- mechanically.
 # --------------------------------------------------------------------------
+#: Note for anyone this trips: `RSA` is case-insensitive and unanchored, so it
+#: matches inside "traversal". That is deliberate -- anchoring it as `\bRSA\b`
+#: would stop it matching `id_rsa`, which is precisely what it exists to catch.
+#: If this fires on prose, reword the prose; do not loosen the pattern.
 FORBIDDEN_CODE = re.compile(
     r"portfolio/orders|client_order_id|KALSHI-ACCESS|RSA|api_key|private_key", re.IGNORECASE
 )

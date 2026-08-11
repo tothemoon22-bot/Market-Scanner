@@ -272,6 +272,12 @@ REVIEWED_SILENT_HANDLERS = {
         "market to the UNATTRIBUTED residual -- the most visible counter in the "
         "system. Asserted in test_population.py."
     ),
+    "monitor/archive.py:158": (
+        "archive.main prints to stderr and returns 1, so the weekly Action fails "
+        "loudly. This is a CLI boundary rather than a subsystem: there is no "
+        "panel to record to, and the scanner sees the same outage from the other "
+        "side as a growing ledger-archive age."
+    ),
 }
 
 
