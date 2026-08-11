@@ -27,7 +27,7 @@ import httpx
 
 from monitor import aggregate as aggregate_mod
 from monitor import alerts as alerts_mod
-from monitor import collect, population, reviews
+from monitor import collect, pipeline, population, reviews
 from monitor.checks import tradeable_size
 from scanner import funnel, history, notify, reference, triggers
 from scanner.state import CONSECUTIVE_FAILURE_ALERT, Outcome, ScannerState, now
@@ -102,19 +102,14 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
                 computed["fee_changes"] = await asyncio.to_thread(_fee_changes)
                 state.source("kalshi_fee_changes").ok()
                 # Positive confirmation, so silence from this trigger means
-                # "checked, nothing scheduled" and never "unknown".
-                split = alerts_mod.classify_fee_changes(
-                    computed["fee_changes"],
-                    set(computed.get("fee_free", {}).get("series", [])),
-                )
+                # "checked, nothing scheduled" and never "unknown". The
+                # material/routine counts are filled in from the assessment
+                # below rather than computed here, so classify_fee_changes has
+                # exactly one call site.
                 state.fee_changes = {
                     "polled_at": now().isoformat(),
                     "n_series": len(computed["fee_changes"].get("series", [])),
                     "n_events": len(computed["fee_changes"].get("events", [])),
-                    # Routine per-event overrides are not alerted on but are
-                    # counted, so the volume stays visible and nothing is hidden.
-                    "n_material": split["n_material"],
-                    "n_routine": split["n_routine"],
                 }
             except Exception as exc:  # noqa: BLE001 - surfaced, not swallowed
                 state.source("kalshi_fee_changes").failed(f"{type(exc).__name__}: {exc}", exc)
@@ -146,6 +141,11 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
             # be the same conflation this audit exists to remove. It shows on
             # the degraded-readings row, and a chronic handful must not page.
             state.unresolved_series = manifest.get("unresolved_series") or []
+            # The registry is not a complete enumeration of the swept universe,
+            # so the exposure is measured on the rows rather than inferred from
+            # the lookup failures: a fee-free series could sit here unseen.
+            state.fee_model_exposure = agg.fee_model_exposure
+            series_categories = dict(agg.series_category)
             state.source("series_metadata").ok()
             if state.unresolved_series:
                 state.log(
@@ -176,8 +176,23 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
             source.ok()
 
             history.record(state.partitions or [])
-            bands = history.bands()
+
+            # One assessment path, shared with monitor/run.py. Arguments are
+            # assembled inside pipeline.assess so neither caller can omit one --
+            # see monitor/pipeline.py for why that stopped being optional.
+            assessment = pipeline.assess(
+                baseline,
+                computed,
+                fee_changes=computed.get("fee_changes"),
+                series_categories=series_categories,
+            )
+            bands = assessment.bands
             state.bands = {k: v.as_dict() for k, v in sorted(bands.items())}
+            if state.fee_changes is not None and assessment.fee_change_split:
+                # Routine per-event overrides are not alerted on but are counted,
+                # so the volume stays visible and nothing is hidden.
+                state.fee_changes["n_material"] = assessment.fee_change_split["n_material"]
+                state.fee_changes["n_routine"] = assessment.fee_change_split["n_routine"]
 
             # Date each UNKNOWN -> KNOWN crossing once, in the ledger rather
             # than in memory, so a restart does not re-announce every band.
@@ -190,7 +205,7 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
                     series=event["series"],
                 )
 
-            below = alerts_mod.classify_below_par(baseline, computed, bands)
+            below = assessment.below_par
             history.record_suppressed(below.suppressed)
             state.below_par = {
                 "pushed": below.pushed,
@@ -198,13 +213,7 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
                 "window": history.suppressed_window(),
             }
 
-            # fee_changes must be passed explicitly. It was fetched into
-            # `computed` and then not handed to evaluate, so the highest-
-            # consequence trigger in the system could not fire in the scanner at
-            # all -- the same shape as the swallowed fetch, one call site along.
-            fired = alerts_mod.evaluate(
-                baseline, computed, computed.get("fee_changes"), bands
-            )
+            fired = assessment.alerts
             state.triggers = [t.__dict__ for t in triggers.evaluate(baseline, computed, bands)]
 
             hits = collect.rate_limit_hits

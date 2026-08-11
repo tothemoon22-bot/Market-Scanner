@@ -192,6 +192,11 @@ class ScannerState:
     #: coefficient, so its silence has to be positively confirmed.
     fee_changes: dict[str, Any] | None = None
 
+    #: Markets whose fee model is unknown because their series is not in the
+    #: registry. "Unknown" is not "not fee-free": the registry is not a complete
+    #: enumeration of the swept universe, so a fee-free series could sit here.
+    fee_model_exposure: dict[str, Any] | None = None
+
     #: Series whose metadata could not be resolved. An unresolved series has an
     #: empty fee_multiplier, so it silently drops out of the fee-free universe
     #: -- a shrinking headline number with no visible cause.
@@ -317,6 +322,7 @@ class ScannerState:
                 "fee_changes": self.fee_changes,
                 "manual_reviews": reviews.status(since=self.started_at),
                 "unresolved_series": self.unresolved_series,
+                "fee_model_exposure": self.fee_model_exposure,
                 "undelivered_alerts": self.undelivered_alerts,
                 "unknown_fee_types": self.unknown_fee_types,
                 "failing_subsystems": [

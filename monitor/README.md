@@ -36,6 +36,40 @@ A third rule was added after the monitor's first live alert:
   [`../docs/NEGATIVE_RESULT.md`](../docs/NEGATIVE_RESULT.md) § "The one pattern
   behind every broken check".
 
+## Path divergence: one assessment, two callers
+
+`monitor/run.py` and `scanner/engine.py` both drive the same pipeline. They used
+to assemble the arguments to `alerts.evaluate` independently, and they disagreed
+— which is how the scheduled-fee-change trigger came to be dead in the scanner
+while the weekly job exercised it. Auditing the class found a second live case
+in the other direction.
+
+| Stage | weekly job | scanner | status |
+| --- | --- | --- | --- |
+| `alerts.evaluate` | omitted `bands` | passed `bands` | **was divergent — now unified** |
+| `alerts.classify_below_par` | never called | called with `bands` | **was divergent — now unified** |
+| `alerts.classify_fee_changes` | via evaluate | called separately too | **was duplicated — now one site** |
+| `SweepAggregate.result` | ✓ | ✓ | unified (byte-identity gated) |
+| `funnel.build_from` | — | ✓ | scanner only — dashboard rendering |
+| `triggers.evaluate` | — | ✓ | scanner only — trigger board, not the alert path |
+| `population.*` | — | ✓ | scanner only — needs consecutive sweeps |
+| `history.record` / bands / suppressed | — | ✓ | scanner only — see durability below |
+| `reviews.status`, `history.review` | — | ✓ | scanner only — heartbeat payload |
+
+Both callers now go through `pipeline.assess`. `bands` is assembled *inside* it
+and is not a parameter, because a band argument a caller can forget is the
+defect itself. `tests/test_pipeline_parity.py` asserts that neither caller
+reaches the shared stages directly and that both pass identical keyword sets —
+the check that would have caught the original bug, since equal outputs on one
+fixture would not have.
+
+**Durability, flagged not fixed.** Partition history, band transitions and the
+suppression ledger are written only by the scanner. The weekly job runs from a
+fresh checkout with no prior state, so it *cannot* accumulate them — the
+scanner's persistent disk is the only copy. `DEPLOY.md` says the archive has to
+survive the instance; snapshots and metrics do, and this history does not.
+Backing it up is a hosting decision, not a code change.
+
 ## Relationship to the live scanner
 
 `scanner/` and `dashboard/` render this same logic continuously — they import
@@ -288,6 +322,55 @@ about.
 
 They stay on the degraded row with this note rather than being cleared, because
 the condition is real and ongoing. If the count moves off 2, that is new.
+
+### The registry is not a complete enumeration
+
+Measured 2026-08-05 against a full sweep of 83,536 markets across 3,267 distinct
+series, with a registry of 12,569:
+
+| | |
+| --- | --- |
+| Series in the sweep but not in the category listing | **4** |
+| Markets they represent | **204 (0.24%)** |
+| Of those, resolvable by per-series backfill | 2 (`KXBANDANTES`, `KXMICHELINNYC3`) |
+| Absent from every series endpoint | 2 (`KXMLBWINS`, `KXNEWOUTBREAK`) |
+
+Neither set contains the other: the registry holds thousands of series with no
+open markets, and the sweep holds four the registry does not list. **Anything
+that treats the registry as ground truth can undercount.**
+
+What depends on it, and in which direction:
+
+| Consumer | Effect of an incomplete registry | Silent? |
+| --- | --- | --- |
+| `fee_multiplier` per row | a fee-free series could go uncounted | **no longer** — measured below |
+| fee-free count and series list | undercount | no longer |
+| `funnel._fee_model` | unresolved priced as fee-*charging* | conservative |
+| category segment stats | falls to `(unmapped)` | visible in the segment table |
+| `fee_types` counter | contributes `(none)` | visible |
+
+Every direction is conservative: an unresolved series is treated as
+fee-charging and non-fee-free, so it can only cause the monitor to *miss* an
+opportunity, never to manufacture one.
+
+The exposure is now measured on the swept rows rather than inferred from lookup
+failures — `SweepAggregate.fee_model_exposure` counts markets whose
+`fee_multiplier` is empty, and the scanner surfaces it. **"Unknown" is not "not
+fee-free"**, and the count says so.
+
+Cross-checked directly against the swept population rather than through the
+registry: the fee-free universe is **11 series / 210 markets**, identical to the
+baseline, and no swept fee-free series is missing from the registry. The 11/14
+figures survive.
+
+One caveat, because the check is partly circular: `fee_multiplier` on a row
+*comes from* the registry, so measuring fee-free "on the rows" still routes
+through it. The genuinely independent statement is the bound — at most 2 series
+and 202 markets have an unreadable fee model, so the fee-free count could in
+principle be understated by that much. **The findings cannot be**, because they
+rest on verified partitions and those 202 markets produce none: `KXMLBWINS-*`
+are cumulative "at least N wins" ladders, which `verify_partition` rejects, and
+`KXNEWOUTBREAK-P-26` is a single market.
 
 ### Spread-map cardinality
 

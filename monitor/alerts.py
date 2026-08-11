@@ -54,7 +54,40 @@ def _get(d: dict, *path: str, default: Any = None) -> Any:
     return cur
 
 
-def classify_fee_changes(fee_changes: dict, fee_free_series: set[str]) -> dict[str, Any]:
+#: --- PROVISIONAL, flagged rather than settled -----------------------------
+#: A scheduled fee change is material on *breadth* alone once it touches more
+#: than this many distinct series, whatever its type or direction.
+#:
+#: The per-change categories cannot see this. A multiplier moving to 1 on a
+#: fee-charging series reads routine one change at a time -- and 100 such
+#: changes across 100 series in several categories is a schedule revision, which
+#: is precisely the event this trigger exists for.
+#:
+#: Observed distribution, 2026-08-05: 100 scheduled changes across **11 series,
+#: all MLB, one category**. That is the routine shape, and it is the only
+#: observation on record. 11 series is therefore the measured ceiling of
+#: "routine breadth"; 15 sits above it with margin while staying far below the
+#: hundreds a genuine schedule revision would touch.
+#:
+#: **n = 1.** Revisit against recorded breadth once the archive has more than
+#: one poll in it -- the routine count is reported every sweep for exactly that.
+BREADTH_SERIES_THRESHOLD = 15
+
+#: A change spanning more than one category is material regardless of count.
+#: Fee schedules are administered per product line; a revision that crosses
+#: category boundaries is a policy change, not a listing operation.
+BREADTH_CATEGORY_THRESHOLD = 1
+
+
+def _series_category(series_ticker: str, categories: dict[str, str]) -> str:
+    return categories.get(series_ticker, "(unknown)")
+
+
+def classify_fee_changes(
+    fee_changes: dict,
+    fee_free_series: set[str],
+    series_categories: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Split scheduled fee changes into material and routine.
 
     **This narrowing rests on one observation and is flagged as such.** Measured
@@ -74,6 +107,14 @@ def classify_fee_changes(fee_changes: dict, fee_free_series: set[str]) -> dict[s
       leave it
     * it sets ``fee_multiplier_override`` to 0 — a series would *join* it
     * it introduces a ``fee_type`` the fee model does not recognise
+    * **the batch is broad** — see below
+
+    Breadth is an independent criterion because the other three are per-change
+    and cannot see it. A multiplier moving to 1 on a fee-charging series reads
+    routine one change at a time; the same change repeated across a hundred
+    series in several categories is a schedule revision, which is the event this
+    trigger exists for. Breadth is therefore a property of the whole batch,
+    decided once and applied to every change in it.
 
     **The routine count is still reported** in `n_routine` and on the health
     panel, so nothing is hidden and a change in the routine volume is visible.
@@ -81,23 +122,53 @@ def classify_fee_changes(fee_changes: dict, fee_free_series: set[str]) -> dict[s
     distribution.
     """
     scheduled = list(fee_changes.get("series") or []) + list(fee_changes.get("events") or [])
+    categories = series_categories or {}
+
+    touched_series = {c.get("series_ticker") for c in scheduled if c.get("series_ticker")}
+    touched_categories = {_series_category(s, categories) for s in touched_series}
+    # Breadth is a property of the whole batch, not of any one change, so it is
+    # decided before the per-change loop and applied to all of them.
+    broad_by_series = len(touched_series) > BREADTH_SERIES_THRESHOLD
+    broad_by_category = (
+        len(touched_categories - {"(unknown)"}) > BREADTH_CATEGORY_THRESHOLD
+    )
+    broad = broad_by_series or broad_by_category
+
     material, routine = [], []
     for change in scheduled:
         multiplier = change.get("fee_multiplier_override")
         fee_type = change.get("fee_type_override")
         is_material = (
-            change.get("series_ticker") in fee_free_series
+            broad
+            or change.get("series_ticker") in fee_free_series
             or multiplier == 0
             or str(multiplier) == "0"
             or (fee_type is not None and fee_type not in KNOWN_FEE_TYPES)
         )
         (material if is_material else routine).append(change)
+
+    reasons = []
+    if broad_by_series:
+        reasons.append(
+            f"{len(touched_series)} series touched, over the {BREADTH_SERIES_THRESHOLD} "
+            "breadth threshold"
+        )
+    if broad_by_category:
+        reasons.append(
+            f"spans {len(touched_categories - {'(unknown)'})} categories: "
+            f"{sorted(touched_categories - {'(unknown)'})}"
+        )
+
     return {
         "material": material,
         "routine": routine,
         "n_material": len(material),
         "n_routine": len(routine),
         "n_total": len(scheduled),
+        "n_series_touched": len(touched_series),
+        "categories_touched": sorted(touched_categories),
+        "broad": broad,
+        "breadth_reasons": reasons,
     }
 
 
@@ -191,6 +262,7 @@ def evaluate(
     current: dict,
     fee_changes: dict | None = None,
     bands: dict | None = None,
+    series_categories: dict[str, str] | None = None,
 ) -> list[Alert]:
     alerts: list[Alert] = []
 
@@ -249,15 +321,24 @@ def evaluate(
         )
     elif fee_changes is not None:
         split = classify_fee_changes(
-            fee_changes, set(_get(current, "fee_free", "series", default=[]))
+            fee_changes,
+            set(_get(current, "fee_free", "series", default=[])),
+            series_categories,
         )
         if split["material"]:
+            why = (
+                "; ".join(split["breadth_reasons"])
+                if split["broad"]
+                else "affects the fee-free universe, sets a multiplier to 0, "
+                "or introduces an unknown fee_type"
+            )
             alerts.append(
                 Alert(
-                    "exchange has published scheduled fee changes to the fee-free universe",
-                    "no scheduled changes affecting a fee-free series",
-                    f"{len(split['material'])} material change(s) "
-                    f"(of {split['n_total']} scheduled): {split['material'][:5]}",
+                    "exchange has published material scheduled fee changes",
+                    "routine per-event overrides only, within one category",
+                    f"{len(split['material'])} material change(s) of "
+                    f"{split['n_total']} scheduled across "
+                    f"{split['n_series_touched']} series - {why}",
                     "What would change the conclusion",
                 )
             )

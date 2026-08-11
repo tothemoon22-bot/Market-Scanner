@@ -25,6 +25,19 @@ All three cost **more** than the dollar they are guaranteed to pay. In the one
 corner of the exchange where every known obstacle has been removed, the trade is
 still a loss. That is the finding in one table.
 
+> **Update, 2026-08-05 — the tripwire has since fired once, on zero capacity.**
+> `KXGDPYEAR-26` was measured at **98.00¢**, below par, in this same
+> intersection. Its binding leg quotes **less than one contract**, so tradeable
+> capacity at the `size ≥ 1` gate is **zero**: the basket is below par and
+> cannot be bought. The other two remained above par (100.50¢ and 106.70¢).
+>
+> This is the behaviour § "First dynamics" describes rather than a new
+> phenomenon — these partitions drift across par, and capacity is the filter
+> that survives. It is recorded here because the sentence above is stated in the
+> present tense and, taken literally, one of the three no longer satisfies it.
+> **The claim that survives is the one about executable capacity, not the one
+> about price.**
+
 ---
 
 ## The question
@@ -159,7 +172,25 @@ opposite structural causes, one conclusion. A thesis that fails under both is
 not failing for a contingent reason.
 
 And where both vanish together — the 61-market deci-cent ∩ fee-free
-intersection — the baskets still price above par. See the opening table.
+intersection — the baskets still price above par. See the opening table, and
+the dated update beneath it.
+
+**A fourth tick structure appeared on 2026-08-05**, which is what the falsifier
+was built to catch, so it is recorded rather than folded in silently:
+
+| Tick structure | Markets | Series | Spread range | Sub-1¢ |
+| --- | --- | --- | --- | --- |
+| `center_half_edge_half_cent` | 30 | `KXBRASILEIROGAME` | 1.0¢ – 9.0¢ | **0 of 30** |
+
+Prices land on half-cent boundaries (60.5¢, 26.5¢, 34.5¢) and spreads take
+half-cent values, so the tick is 0.5¢ — finer than a cent, coarser than the
+deci-cent segment. **It does not move the finding**: its tightest observed
+spread is 1.0¢, against a 0.6¢ median in the existing `deci_cent` segment, so
+the most favourable location on the exchange is unchanged. Thirty
+three-way football markets are also not where a partition arbitrage lives.
+
+The trigger fired correctly and this is what it is for — the tick-structure set
+changing is the one thing Finding 4 said would need re-examination.
 
 ---
 
@@ -479,12 +510,40 @@ failures were errorless. The second was found only by asking the audit's
 question of the whole path rather than of the handler — the fetch was always
 fine, and the defect was one call site along.
 
-Two standing questions, added alongside the one above, because neither implies
-the other:
+**6. Two implementations of one pipeline, with the tests on the one that is not
+production.** The second fee-change failure above is an instance of a class in
+its own right, and the class is the more useful object.
+
+`monitor/run.py` and `scanner/engine.py` both assembled the arguments to
+`evaluate()` independently. The weekly job was the one the tests exercised; the
+scanner is the one that runs 24/7. **A parameter with a permissive default that
+one caller omits does not appear as a signature mismatch, does not raise, and
+does not change any output on a fixture that lacks the relevant event.** Every
+mechanism that normally catches a wiring error was blind to it.
+
+Auditing the class rather than the instance found a second live case
+immediately, in the other direction: `monitor/run.py` omitted `bands`, so the
+*weekly* job's below-par classification never ran its band branch. Neither
+implementation was wrong; they simply disagreed, and nothing was looking at the
+disagreement.
+
+The fix is structural rather than diligent. Both callers now go through one
+`pipeline.assess`, the arguments are assembled inside it, and `bands` is not a
+parameter at all — a band argument a caller can forget is exactly the defect.
+What cannot be unified is checked directly: a test compares the *keyword sets*
+each call site passes, because equal outputs on one fixture would not have
+caught either bug.
+
+Three standing questions now, because none implies the others:
 
 > **Would a failure in this path be visible, or merely logged?**
 >
 > **Has this trigger ever been shown to fire, or only shown not to error?**
+>
+> **Which code path does production run, and is that the one under test?**
+
+The third belongs in this section rather than beside it: the test suite is an
+instrument, and it was measuring the wrong subject.
 
 Every trigger now has a pair of tests: fires exactly at its stated threshold,
 silent one step inside it. Before that, the fee-free-series trigger's only
@@ -554,6 +613,34 @@ it is still what anchors the projection. The failure is using a *method* whose
 resolution was never checked against the effect being measured. The defence is
 the same shape as the others: get the number a second way, from a source with
 different failure modes, before believing the first.
+
+### The same family: a framing that determines its answer
+
+The growth projection produced **11 days or 185 days from the same two sweeps**,
+differing only in whether the growth was attributed to a component that can
+accumulate.
+
+Market count rose 9.8% in 8.2 hours. Bucketed by time to resolution, 97.1% of
+that was in markets closing within seven days — which cannot accumulate, because
+each one leaves the window it is counted in. Little's Law on that sub-population
+(`L = λW`, with `W ≤ 7 days` true by construction) gives an implied residence of
+1.12 days that reproduces the observed count: the component was already at its
+plateau and the window had caught a listing burst. The part that compounds grew
+at 1.9%/day, not 31.6%.
+
+> **A headline growth rate over a population containing a bounded component is
+> not a growth rate.** It is a weighted average of a rate and a plateau, and the
+> weight is whatever the sampling window happened to catch.
+
+Neither figure is a measurement error. Both are arithmetic on the same two
+sweeps. The choice of denominator is doing all the work, and nothing in the
+number itself announces that — which is what makes it the same family as the
+noise-floor case rather than a separate lesson.
+
+Every derived date in `docs/DEPLOY.md` carries its observation count for this
+reason. **n = 1** sits next to 185 days, and the whole-population rate from the
+*other* pair on record is 10.8%/day rather than 31.6%, so the headline is not
+stable across the two observations that exist.
 
 ---
 

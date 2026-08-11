@@ -220,6 +220,27 @@ class SweepAggregate:
         self.fee_free_series: set[str] = set()
         self.fee_free_markets = 0
 
+        #: Markets whose series metadata could not be resolved, so their fee
+        #: model is *unknown* rather than known-standard. The registry is not a
+        #: complete enumeration of the swept universe -- measured 2026-08-05, 4
+        #: series appear in a sweep and not in the category listing -- so a
+        #: fee-free series could in principle sit here and never be counted.
+        #: Recorded as its own number because "unknown" must not read as "not
+        #: fee-free", even though the code treats it that way conservatively.
+        #:
+        #: Deliberately **not** in ``result()``: that payload is gated
+        #: byte-identical against ``metrics.compute`` and the committed
+        #: baseline, and the instruction is to fix the code rather than adjust
+        #: the baseline. The scanner reads these off the aggregate, the same way
+        #: it reads spread-map cardinality.
+        self.unknown_fee_model_series: set[str] = set()
+        self.unknown_fee_model_markets = 0
+
+        #: series -> category, bounded by series count (~3,300 in a sweep), not
+        #: market count. Needed to tell a schedule revision that crosses product
+        #: lines from a batch of listing operations inside one.
+        self.series_category: dict[str, str] = {}
+
         #: The deci-cent AND fee-free intersection: 61 markets at baseline, and
         #: the named tripwire. Retained whole rather than derived from the
         #: partition candidates, because the reference verifies the intersection
@@ -228,6 +249,15 @@ class SweepAggregate:
         #: exactly matters more than the handful of bytes.
         self.intersection_legs: list[tuple] = []
         self.intersection_markets = 0
+
+    @property
+    def fee_model_exposure(self) -> dict[str, Any]:
+        """Markets whose fee model is unknown, not known-standard."""
+        return {
+            "n_series": len(self.unknown_fee_model_series),
+            "series": sorted(self.unknown_fee_model_series),
+            "n_markets": self.unknown_fee_model_markets,
+        }
 
     # ------------------------------------------------------------------ fold --
 
@@ -241,9 +271,14 @@ class SweepAggregate:
 
         self.tick_structures[row["tick_structure"] or "(none)"] += 1
         self.fee_types[row["fee_type"] or "(none)"] += 1
+        if row["series_ticker"] and row["series_ticker"] not in self.series_category:
+            self.series_category[row["series_ticker"]] = row["category"] or "(unmapped)"
         if row["fee_multiplier"] == "0":
             self.fee_free_series.add(row["series_ticker"])
             self.fee_free_markets += 1
+        elif row["fee_multiplier"] == "":
+            self.unknown_fee_model_series.add(row["series_ticker"])
+            self.unknown_fee_model_markets += 1
 
         if row["tick_structure"] == "deci_cent" and row["fee_multiplier"] == "0":
             self.intersection_markets += 1

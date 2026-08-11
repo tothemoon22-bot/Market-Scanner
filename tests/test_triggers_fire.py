@@ -95,28 +95,30 @@ def test_a_change_to_a_fee_free_series_fires():
     change = {"series_ticker": "KXGDPYEAR", "fee_multiplier_override": 1,
               "fee_type_override": "quadratic"}
     fired = alerts.evaluate({}, FEE_FREE_CURRENT, {"series": [change], "events": []})
-    assert _fired(fired, "scheduled fee changes to the fee-free universe")
+    assert _fired(fired, "material scheduled fee changes")
 
 
 def test_a_change_making_a_series_fee_free_fires():
     change = {"series_ticker": "KXSOMETHING", "fee_multiplier_override": 0,
               "fee_type_override": "quadratic"}
     fired = alerts.evaluate({}, FEE_FREE_CURRENT, {"series": [], "events": [change]})
-    assert _fired(fired, "fee-free universe"), "a series joining the universe is material"
+    assert _fired(fired, "material scheduled fee changes"), (
+        "a series joining the fee-free universe is material"
+    )
 
 
 def test_a_change_introducing_an_unknown_fee_type_fires():
     change = {"series_ticker": "KXMLBGAME", "fee_multiplier_override": 1,
               "fee_type_override": "quadratic_with_maker_rebates"}
     fired = alerts.evaluate({}, FEE_FREE_CURRENT, {"series": [], "events": [change]})
-    assert _fired(fired, "fee-free universe")
+    assert _fired(fired, "material scheduled fee changes")
 
 
 def test_routine_per_event_overrides_do_not_fire_but_are_counted():
     """100 of these were pending live. Firing on them would mute the trigger."""
     fee_changes = {"series": [], "events": [ROUTINE_CHANGE] * 100}
     fired = alerts.evaluate({}, FEE_FREE_CURRENT, fee_changes)
-    assert not _fired(fired, "fee-free universe")
+    assert not _fired(fired, "material scheduled fee changes")
 
     split = alerts.classify_fee_changes(fee_changes, {"KXGDPYEAR", "KXBTCY"})
     assert split["n_routine"] == 100 and split["n_material"] == 0
@@ -129,8 +131,87 @@ def test_one_material_change_among_a_hundred_routine_ones_still_fires():
                 "fee_type_override": "quadratic"}
     fee_changes = {"series": [], "events": [ROUTINE_CHANGE] * 100 + [material]}
     fired = alerts.evaluate({}, FEE_FREE_CURRENT, fee_changes)
-    assert _fired(fired, "fee-free universe")
+    assert _fired(fired, "material scheduled fee changes")
     assert any("of 101 scheduled" in a.current for a in fired)
+
+
+# ------------------------------------------------------- breadth criterion ---
+# Breadth is independent of the per-change categories, which cannot see it: a
+# multiplier moving to 1 on a fee-charging series is routine one change at a
+# time, and the same change across a hundred series is a schedule revision.
+
+MLB_CATEGORIES = {f"KXMLB{i}": "Sports" for i in range(200)}
+
+
+def _broad(n_series: int, category_of=lambda i: "Sports") -> tuple[dict, dict]:
+    changes = [
+        {"series_ticker": f"KXMLB{i}", "fee_multiplier_override": 1,
+         "fee_type_override": "quadratic"}
+        for i in range(n_series)
+    ]
+    cats = {f"KXMLB{i}": category_of(i) for i in range(n_series)}
+    return {"series": [], "events": changes}, cats
+
+
+def test_a_broad_change_with_no_individually_material_one_fires():
+    """The gap breadth closes: every change routine, the batch is not."""
+    fee_changes, cats = _broad(alerts.BREADTH_SERIES_THRESHOLD + 1)
+    fired = alerts.evaluate({}, FEE_FREE_CURRENT, fee_changes, None, cats)
+    assert _fired(fired, "material scheduled fee changes")
+    split = alerts.classify_fee_changes(fee_changes, {"KXGDPYEAR"}, cats)
+    assert split["broad"] and split["n_material"] == alerts.BREADTH_SERIES_THRESHOLD + 1
+    assert any("breadth threshold" in r for r in split["breadth_reasons"])
+
+
+def test_the_breadth_threshold_is_silent_one_series_inside_it():
+    fee_changes, cats = _broad(alerts.BREADTH_SERIES_THRESHOLD)
+    fired = alerts.evaluate({}, FEE_FREE_CURRENT, fee_changes, None, cats)
+    assert not _fired(fired, "material scheduled fee changes")
+
+
+def test_the_observed_live_batch_stays_routine_under_the_breadth_rule():
+    """100 changes across 11 MLB series, one category. Measured 2026-08-05.
+
+    If breadth reclassified the observed routine shape, the trigger would fire
+    every sweep again and the narrowing would have achieved nothing.
+    """
+    changes = [
+        {"series_ticker": f"KXMLB{i % 11}", "fee_multiplier_override": 1,
+         "fee_type_override": "quadratic"}
+        for i in range(100)
+    ]
+    cats = {f"KXMLB{i}": "Sports" for i in range(11)}
+    split = alerts.classify_fee_changes({"series": [], "events": changes}, set(), cats)
+    assert split["n_series_touched"] == 11
+    assert not split["broad"], "11 series in one category is the routine shape"
+    assert split["n_material"] == 0 and split["n_routine"] == 100
+
+
+def test_crossing_a_category_boundary_is_material_at_any_count():
+    """Fee schedules are administered per product line. Crossing one is policy."""
+    changes = [
+        {"series_ticker": "KXMLBGAME", "fee_multiplier_override": 1,
+         "fee_type_override": "quadratic"},
+        {"series_ticker": "KXGDPQ", "fee_multiplier_override": 1,
+         "fee_type_override": "quadratic"},
+    ]
+    cats = {"KXMLBGAME": "Sports", "KXGDPQ": "Economics"}
+    split = alerts.classify_fee_changes({"series": [], "events": changes}, set(), cats)
+    assert split["broad"] and split["n_material"] == 2
+    assert any("spans 2 categories" in r for r in split["breadth_reasons"])
+
+
+def test_unknown_categories_do_not_manufacture_breadth():
+    """Without a category map every series would look like its own category."""
+    changes = [
+        {"series_ticker": "KXA", "fee_multiplier_override": 1,
+         "fee_type_override": "quadratic"},
+        {"series_ticker": "KXB", "fee_multiplier_override": 1,
+         "fee_type_override": "quadratic"},
+    ]
+    split = alerts.classify_fee_changes({"series": [], "events": changes}, set(), None)
+    assert not split["broad"], "missing category data must not read as spanning many"
+    assert split["categories_touched"] == ["(unknown)"]
 
 
 def test_an_empty_fee_change_response_is_silence_not_an_alert():
@@ -167,16 +248,18 @@ def test_the_failed_and_empty_responses_render_differently():
     assert alerts.render(empty) == "No alerts. Baseline holds."
 
 
-def test_the_scanner_passes_fee_changes_to_evaluate():
+def test_the_scanner_passes_fee_changes_into_the_pipeline():
     """It fetched them and then did not hand them over, so the trigger was dead.
 
-    Asserted against the call, not the fetch: the fetch was always fine.
+    Asserted against the call, not the fetch: the fetch was always fine. Both
+    callers now go through `pipeline.assess`, and
+    `tests/test_pipeline_parity.py` asserts the two pass identical keyword sets.
     """
     from pathlib import Path
 
     src = Path("scanner/engine.py").read_text()
-    call = src.split("fired = alerts_mod.evaluate(")[1].split(")")[0]
-    assert "fee_changes" in call, "the scanner must pass fee_changes to evaluate"
+    call = src.split("assessment = pipeline.assess(")[1].split(")")[0]
+    assert "fee_changes" in call, "the scanner must pass fee_changes into the pipeline"
 
 
 # ---------------------------------------------------------- spread + ticks ---

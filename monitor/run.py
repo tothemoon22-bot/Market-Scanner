@@ -17,7 +17,7 @@ from pathlib import Path
 
 import httpx
 
-from monitor import aggregate, collect
+from monitor import aggregate, collect, pipeline
 from monitor import alerts as alerts_mod
 
 BASELINE = Path("monitor/baseline.json")
@@ -71,7 +71,7 @@ def main() -> int:
     # Both paths stream: nothing that scales with market count is materialised,
     # here or in the sweep. See monitor/aggregate.py.
     if args.source:
-        current = aggregate.SweepAggregate().fold(collect.iter_snapshot(args.source)).result()
+        agg = aggregate.SweepAggregate().fold(collect.iter_snapshot(args.source))
         fee_changes = None
         snapshot_dir = args.source
     else:
@@ -80,9 +80,14 @@ def main() -> int:
         agg, _manifest = collect.sweep(
             CATEGORIES, archive_to=None if args.no_archive else snapshot_dir
         )
-        current = agg.result()
-        del agg
         fee_changes = fetch_fee_changes()
+
+    current = agg.result()
+    # Bounded by series count. Captured before the aggregate is released so the
+    # breadth criterion can tell a cross-category schedule revision from a batch
+    # of listing operations inside one product line.
+    series_categories = dict(agg.series_category)
+    del agg
 
     if args.write_baseline:
         BASELINE.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")
@@ -90,7 +95,14 @@ def main() -> int:
         return 0
 
     baseline = json.loads(BASELINE.read_text())
-    fired = alerts_mod.evaluate(baseline, current, fee_changes)
+    # One assessment path, shared with scanner/engine.py. This call site used to
+    # omit `bands`, which defaults to None, so the weekly job's below-par
+    # classification silently skipped its band branch -- the same shape as the
+    # fee_changes bug, in the other direction. See monitor/pipeline.py.
+    assessment = pipeline.assess(
+        baseline, current, fee_changes=fee_changes, series_categories=series_categories
+    )
+    fired = assessment.alerts
 
     if not args.source and not args.no_archive:
         (snapshot_dir / "metrics.json").write_text(

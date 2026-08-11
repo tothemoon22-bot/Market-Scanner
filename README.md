@@ -70,7 +70,13 @@ held a credential; every measurement here came from public endpoints.
    swallowed, once never passed to the evaluator — and every test it had
    asserted only that it did not raise.
 
-   All three questions, in [`docs/NEGATIVE_RESULT.md`](docs/NEGATIVE_RESULT.md)
+7. **Ask which code path production runs, and whether that is the one under
+   test.** Two implementations of one pipeline, with the tests on the one that
+   is not production, is how a trigger stays dead through a green suite. Both
+   callers now go through one `pipeline.assess`, and a test compares the keyword
+   sets each passes — equal outputs on one fixture would not have caught it.
+
+   All four questions, in [`docs/NEGATIVE_RESULT.md`](docs/NEGATIVE_RESULT.md)
    § "The one pattern behind every broken check".
 
 ## Start here
