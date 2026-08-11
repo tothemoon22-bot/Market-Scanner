@@ -253,10 +253,41 @@ can still tell the difference. A new one that is neither fails the suite.
 **Degradation is not outage.** A metadata pass that completes with two lookups
 failed is a degraded reading, shown on its own row; filing it as a subsystem
 failure would page every sweep on a chronic benign condition, which is the same
-conflation in the other direction. Live sweeps currently show 2 unresolved
-series (`KXMLBWINS`, `KXNEWOUTBREAK`) against 11 fee-free series — those markets
-carry no `fee_multiplier` and silently leave the fee-free universe, which was
-invisible before this panel existed.
+conflation in the other direction.
+
+### The two unresolved series — resolved
+
+`KXMLBWINS` and `KXNEWOUTBREAK` are **not a transient lookup failure and not an
+unrecognised `fee_type`.** Checked 2026-08-05:
+
+- `GET /series/KXMLBWINS` and `/series/KXNEWOUTBREAK` both return **HTTP 404**,
+  repeatedly, from two sessions.
+- Neither appears anywhere in the series registry — 12,567 series across all 17
+  categories.
+- `GET /markets?series_ticker=KXMLBWINS` returns **zero** markets, while the
+  unfiltered `status=open` sweep returns 202 markets across 31 events under that
+  prefix, all `status: active`.
+
+So the markets are real and tradeable but their series is not registered. This
+is exchange-side, the same class as the `KXB85`/`KXB65` case in the
+reconciliation — `status=open` returns markets the series endpoints do not know
+about.
+
+**Consequences, bounded:**
+
+- Their fee status is *unknown*, not *known non-zero*. The monitor excludes them
+  from the fee-free universe, which is correct — exhaustiveness and fee regime
+  are never inferred — but the honest statement is that 202 markets carry no
+  readable fee model.
+- **No finding is affected.** Zero of the 31 events verify as partitions:
+  `KXMLBWINS-*` are cumulative "at least N wins" ladders, which
+  `verify_partition` rejects as not range buckets, and `KXNEWOUTBREAK-P-26` is a
+  single market.
+- The baseline needs no correction: it counted 11 series and 210 markets, and
+  neither of these was ever among them.
+
+They stay on the degraded row with this note rather than being cleared, because
+the condition is real and ongoing. If the count moves off 2, that is new.
 
 ### Spread-map cardinality
 
@@ -275,8 +306,51 @@ The taker coefficient (0.07) and the rounding rule live in a published PDF, not
 the API. They cannot be read programmatically. The available proxies are
 `fee_type` / `fee_multiplier` per series and the exchange's scheduled-fee-change
 endpoints, both of which are tracked. **A silent change to the coefficient
-itself would not fire an alert** — if one of the other triggers fires, re-read
-the published schedule by hand.
+itself would not fire an alert.**
+
+That makes it a standing *manual* obligation, and a manual obligation with no
+due date is one that quietly stops happening. `monitor/reviews.py` carries it as
+a dated item on a 91-day period, with a ledger of when it was last done; the
+heartbeat prints the due date and how many days overdue, so a missed quarter
+shows as a number rather than as an absence. Record a completed check with
+`reviews.record_done("fee_schedule_pdf", note=...)` — that is the only thing
+that resets the clock.
+
+### The fee-change trigger was dead twice, and both were errorless
+
+Recorded here because it is the argument for auditing rather than testing:
+
+1. A failed fetch was swallowed into an absent key — and an absent key is
+   exactly what a successful fetch returning *nothing scheduled* looks like.
+2. The scanner fetched the data and never passed it to `alerts.evaluate`.
+   `monitor/run.py` passed it; `scanner/engine.py` did not. The trigger could
+   not fire in the continuous scanner at any value.
+
+Both now have firing tests, and a failed poll is itself an alert, so silence
+from this trigger means *checked, nothing scheduled* and never *unknown*. The
+heartbeat states when it was last polled successfully and what it returned.
+
+### Material versus routine fee changes — a narrowing, flagged
+
+Wiring the trigger surfaced a third problem: **the endpoint returns 100
+scheduled changes right now**, all per-event MLB overrides moving individual
+games onto the standard schedule (`fee_multiplier_override: 1`). Firing on any
+scheduled change would fire on every sweep, and a trigger that fires every sweep
+gets muted — unacceptable for the closest thing this system has to a
+fee-coefficient alarm.
+
+The alert is therefore on **material** changes only:
+
+- touches a series currently in the fee-free universe (it would leave)
+- sets `fee_multiplier_override` to 0 (a series would join)
+- introduces a `fee_type` the fee model does not recognise
+
+Measured live 2026-08-05: 100 scheduled, **0 material, 100 routine**.
+
+**This narrowing rests on one observation and is flagged rather than settled.**
+The routine count is still reported on the health panel and in the heartbeat, so
+the volume stays visible and nothing is hidden — and a test asserts that one
+material change among a hundred routine ones still fires.
 
 ## The baseline and the gate
 

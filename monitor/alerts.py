@@ -54,6 +54,53 @@ def _get(d: dict, *path: str, default: Any = None) -> Any:
     return cur
 
 
+def classify_fee_changes(fee_changes: dict, fee_free_series: set[str]) -> dict[str, Any]:
+    """Split scheduled fee changes into material and routine.
+
+    **This narrowing rests on one observation and is flagged as such.** Measured
+    2026-08-05: the endpoints returned 100 scheduled changes, all of them
+    per-event MLB overrides moving individual games onto the standard schedule
+    (`fee_multiplier_override: 1`, `quadratic` or `quadratic_with_maker_fees`).
+    Zero touched a fee-free series; zero set a multiplier to 0.
+
+    Firing on *any* scheduled change would therefore fire on every sweep, and a
+    trigger that fires every sweep is one that gets muted — which is
+    unacceptable for the closest thing this system has to a fee-coefficient
+    alarm. So the alert is on material changes only.
+
+    Material means one of:
+
+    * it touches a series currently in the fee-free universe — that series would
+      leave it
+    * it sets ``fee_multiplier_override`` to 0 — a series would *join* it
+    * it introduces a ``fee_type`` the fee model does not recognise
+
+    **The routine count is still reported** in `n_routine` and on the health
+    panel, so nothing is hidden and a change in the routine volume is visible.
+    Revisit if the material rate proves noisy; one observation is not a
+    distribution.
+    """
+    scheduled = list(fee_changes.get("series") or []) + list(fee_changes.get("events") or [])
+    material, routine = [], []
+    for change in scheduled:
+        multiplier = change.get("fee_multiplier_override")
+        fee_type = change.get("fee_type_override")
+        is_material = (
+            change.get("series_ticker") in fee_free_series
+            or multiplier == 0
+            or str(multiplier) == "0"
+            or (fee_type is not None and fee_type not in KNOWN_FEE_TYPES)
+        )
+        (material if is_material else routine).append(change)
+    return {
+        "material": material,
+        "routine": routine,
+        "n_material": len(material),
+        "n_routine": len(routine),
+        "n_total": len(scheduled),
+    }
+
+
 @dataclass(frozen=True)
 class BelowParResult:
     """Split of below-par detections into what pushes and what is only recorded.
@@ -184,14 +231,33 @@ def evaluate(
                 "What would change the conclusion",
             )
         )
-    if fee_changes:
-        scheduled = fee_changes.get("series", []) + fee_changes.get("events", [])
-        if scheduled:
+    # **Silence from this trigger must mean "checked, nothing scheduled", never
+    # "unknown".** The fee-change endpoints are one of only two programmatic
+    # proxies for a change to the 0.07 coefficient -- the single structural
+    # change that would most directly invalidate the negative result -- and the
+    # coefficient itself lives in a PDF that cannot be polled at all. So a
+    # failed poll is itself an alert.
+    outcome = _get(current, "fee_changes_outcome", default=None)
+    if outcome and outcome.get("state") == "failed":
+        alerts.append(
+            Alert(
+                "fee-change endpoint could not be polled - this trigger did not run",
+                "polled every sweep; silence means nothing scheduled",
+                str(outcome.get("reason", "unknown error")),
+                "What would change the conclusion",
+            )
+        )
+    elif fee_changes is not None:
+        split = classify_fee_changes(
+            fee_changes, set(_get(current, "fee_free", "series", default=[]))
+        )
+        if split["material"]:
             alerts.append(
                 Alert(
-                    "exchange has published scheduled fee changes",
-                    "no scheduled changes",
-                    f"{len(scheduled)} scheduled change(s): {scheduled[:5]}",
+                    "exchange has published scheduled fee changes to the fee-free universe",
+                    "no scheduled changes affecting a fee-free series",
+                    f"{len(split['material'])} material change(s) "
+                    f"(of {split['n_total']} scheduled): {split['material'][:5]}",
                     "What would change the conclusion",
                 )
             )

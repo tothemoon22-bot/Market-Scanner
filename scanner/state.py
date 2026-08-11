@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from monitor import reviews
 from monitor.aggregate import ALERT_DISTINCT_SPREADS, MAX_DISTINCT_SPREADS
 from scanner import process
 
@@ -186,6 +187,11 @@ class ScannerState:
     population: dict[str, Any] | None = None
     trend: list[dict[str, Any]] | None = None
 
+    #: Last successful poll of the scheduled-fee-change endpoints, and what it
+    #: returned. One of only two programmatic proxies for a change to the 0.07
+    #: coefficient, so its silence has to be positively confirmed.
+    fee_changes: dict[str, Any] | None = None
+
     #: Series whose metadata could not be resolved. An unresolved series has an
     #: empty fee_multiplier, so it silently drops out of the fee-free universe
     #: -- a shrinking headline number with no visible cause.
@@ -308,6 +314,8 @@ class ScannerState:
                 "population": self.population
                 or Outcome.make(Outcome.NOT_RUN, "no full sweep has completed"),
                 "trend": self.trend,
+                "fee_changes": self.fee_changes,
+                "manual_reviews": reviews.status(since=self.started_at),
                 "unresolved_series": self.unresolved_series,
                 "undelivered_alerts": self.undelivered_alerts,
                 "unknown_fee_types": self.unknown_fee_types,

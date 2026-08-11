@@ -27,7 +27,7 @@ import httpx
 
 from monitor import aggregate as aggregate_mod
 from monitor import alerts as alerts_mod
-from monitor import collect, population
+from monitor import collect, population, reviews
 from monitor.checks import tradeable_size
 from scanner import funnel, history, notify, reference, triggers
 from scanner.state import CONSECUTIVE_FAILURE_ALERT, Outcome, ScannerState, now
@@ -101,6 +101,21 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
             try:
                 computed["fee_changes"] = await asyncio.to_thread(_fee_changes)
                 state.source("kalshi_fee_changes").ok()
+                # Positive confirmation, so silence from this trigger means
+                # "checked, nothing scheduled" and never "unknown".
+                split = alerts_mod.classify_fee_changes(
+                    computed["fee_changes"],
+                    set(computed.get("fee_free", {}).get("series", [])),
+                )
+                state.fee_changes = {
+                    "polled_at": now().isoformat(),
+                    "n_series": len(computed["fee_changes"].get("series", [])),
+                    "n_events": len(computed["fee_changes"].get("events", [])),
+                    # Routine per-event overrides are not alerted on but are
+                    # counted, so the volume stays visible and nothing is hidden.
+                    "n_material": split["n_material"],
+                    "n_routine": split["n_routine"],
+                }
             except Exception as exc:  # noqa: BLE001 - surfaced, not swallowed
                 state.source("kalshi_fee_changes").failed(f"{type(exc).__name__}: {exc}", exc)
                 computed["fee_changes_outcome"] = Outcome.make(
@@ -183,7 +198,13 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
                 "window": history.suppressed_window(),
             }
 
-            fired = alerts_mod.evaluate(baseline, computed, bands=bands)
+            # fee_changes must be passed explicitly. It was fetched into
+            # `computed` and then not handed to evaluate, so the highest-
+            # consequence trigger in the system could not fire in the scanner at
+            # all -- the same shape as the swallowed fetch, one call site along.
+            fired = alerts_mod.evaluate(
+                baseline, computed, computed.get("fee_changes"), bands
+            )
             state.triggers = [t.__dict__ for t in triggers.evaluate(baseline, computed, bands)]
 
             hits = collect.rate_limit_hits
@@ -392,14 +413,30 @@ def heartbeat_summary(state: ScannerState) -> str:
             f"({block['drift_seconds']:+.0f}s over {block['samples']} samples)"
         )
 
+    # **Positive confirmation, not absence of error.** This trigger's silence
+    # has to mean "checked, nothing scheduled" -- it is one of only two
+    # programmatic proxies for a change to the 0.07 coefficient.
+    fc = state.fee_changes
+    if fc is None:
+        fee_line = "fee-change endpoints: NEVER POLLED SUCCESSFULLY - treat this trigger as down"
+    else:
+        fee_line = (
+            f"fee-change endpoints: last polled {fc['polled_at'][:19]}Z, "
+            f"{fc['n_series']} series and {fc['n_events']} event changes scheduled "
+            f"({fc.get('n_material', 0)} material, {fc.get('n_routine', 0)} routine)"
+        )
+
     lines = [
         f"{state.sweep_count} sweeps, uptime {(now() - state.started_at).days}d",
         cadence("full sweep", sweep),
         cadence("tracked subset", tracked),
         f"429s: {rl['lifetime']} lifetime, {rl['last_24h']} in the last 24h",
         f"rss: {proc['rss_mb']} MB" if proc["rss_mb"] is not None else "rss: not readable here",
+        fee_line,
         "",
         history.render_review(history.review()),
+        "",
+        reviews.render(reviews.status(since=state.started_at)),
     ]
     return "\n".join(lines)
 

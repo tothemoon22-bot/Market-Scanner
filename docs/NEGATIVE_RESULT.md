@@ -458,8 +458,37 @@ The fix is not to stop catching. It is to make catching produce a state:
 - a subsystem failing three consecutive sweeps pushes on its own account, with
   no detection threshold involved
 
-Standing question, added alongside the one above: **would a failure in this path
-be visible, or merely logged?**
+**What it cost, concretely.** The highest-consequence trigger in the system was
+silently dead, and an audit rather than a symptom found it.
+
+The scheduled-fee-change endpoints are one of only *two* programmatic proxies for
+a change to the 0.07 taker coefficient — the single structural change that would
+most directly invalidate this document — and the coefficient itself lives in a
+published PDF that no endpoint exposes. That trigger had two independent
+failures, both of this shape:
+
+1. A failed fetch was swallowed into an absent key, and an absent key is what a
+   successful fetch of *nothing scheduled* also looks like. The failure path and
+   the healthy path rendered identically.
+2. The continuous scanner fetched the data and then **never passed it to the
+   evaluator**. `monitor/run.py` passes it; `scanner/engine.py` did not. The
+   trigger could not fire in the scanner at all, at any value.
+
+No test caught either. Every test asserted the trigger did not error, and both
+failures were errorless. The second was found only by asking the audit's
+question of the whole path rather than of the handler — the fetch was always
+fine, and the defect was one call site along.
+
+Two standing questions, added alongside the one above, because neither implies
+the other:
+
+> **Would a failure in this path be visible, or merely logged?**
+>
+> **Has this trigger ever been shown to fire, or only shown not to error?**
+
+Every trigger now has a pair of tests: fires exactly at its stated threshold,
+silent one step inside it. Before that, the fee-free-series trigger's only
+coverage moved it by 29 against a documented threshold of 3.
 
 **6. And the inversion, which is the same insight paying out.** `bid(YES) +
 bid(NO) > 100¢` is impossible in a correctly reconstructed book. That makes it

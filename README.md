@@ -64,7 +64,13 @@ held a credential; every measurement here came from public endpoints.
    says which of *computed-empty*, *not-yet-run* or *failed-run* it is, and a
    push when a subsystem is down for three sweeps running.
 
-   Both questions, in [`docs/NEGATIVE_RESULT.md`](docs/NEGATIVE_RESULT.md)
+6. **Ask whether a trigger has ever been shown to fire, or only shown not to
+   error.** Every threshold gets a pair: fires at the stated boundary, silent
+   one step inside it. The fee-change trigger was dead twice over — once
+   swallowed, once never passed to the evaluator — and every test it had
+   asserted only that it did not raise.
+
+   All three questions, in [`docs/NEGATIVE_RESULT.md`](docs/NEGATIVE_RESULT.md)
    § "The one pattern behind every broken check".
 
 ## Start here

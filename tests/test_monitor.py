@@ -294,6 +294,52 @@ def test_second_snapshot_also_produces_no_alerts():
     assert alerts.evaluate(baseline, metrics.compute(rows)) == []
 
 
+def test_the_fee_free_universe_is_counted_on_one_basis(tmp_path):
+    """14 and 11 are two bases for one universe, not a 3-series move.
+
+    The memo's "14 series" is the fee-free *registry* count; the baseline's 11
+    is the subset with open markets, which is the only figure recomputable from
+    a snapshot and the only one the trigger watches. Verified live 2026-08-05:
+    the registry holds exactly 14 with fee_multiplier 0, and the 3 with no open
+    markets are KXEXPAND, KXNEXTIRANLEADER and KXTRUMPOUT.
+
+    Mixing the two would manufacture a delta of exactly the alert threshold,
+    so the distinction is asserted rather than left to a comment.
+    """
+    baseline = json.loads(BASELINE.read_text())
+    open_market_series = set(baseline["fee_free"]["series"])
+    assert len(open_market_series) == 11
+    assert baseline["fee_free"]["n_series_with_open_markets"] == 11
+    assert baseline["fee_free"]["n_markets"] == 210
+
+    registry_only = {"KXEXPAND", "KXNEXTIRANLEADER", "KXTRUMPOUT"}
+    assert not (registry_only & open_market_series), (
+        "a registry-only series must never appear in the open-market count"
+    )
+    assert len(open_market_series | registry_only) == 14
+
+    # Recomputing from the committed snapshot must give the open-market basis.
+    rows = collect.read_snapshot(SNAPSHOT)
+    computed = metrics.compute(rows)
+    assert computed["fee_free"]["n_series_with_open_markets"] == 11
+    assert set(computed["fee_free"]["series"]) == open_market_series
+
+
+def test_the_thirteen_fee_free_partitions_are_the_ones_bands_are_keyed_on():
+    """Bands are per event across these 13. The set is pinned, not incidental."""
+    baseline = json.loads(BASELINE.read_text())
+    events = [p["event"] for p in baseline["verified_partitions"]["fee_free_detail"]]
+    assert len(events) == 13
+    assert baseline["verified_partitions"]["n_fee_free"] == 13
+    assert sorted(events) == [
+        "KXBTCY-27JAN0100", "KXETHY-27JAN0100",
+        *[f"KXGDPYEAR-{year}" for year in range(26, 37)],
+    ]
+    # Every one belongs to a series in the fee-free open-market set.
+    series = set(baseline["fee_free"]["series"])
+    assert {e.split("-")[0] for e in events} <= series
+
+
 def test_alert_body_carries_the_do_not_trade_line():
     fired = alerts.evaluate(
         {"fee_free": {"n_series_with_open_markets": 11, "series": []}},

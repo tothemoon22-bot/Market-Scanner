@@ -139,10 +139,52 @@ The headline number and the compounding number differ by 5.7×, from the same
 sweep pair. **A market count alone cannot tell them apart**, which is why the
 distribution is now recorded per sweep rather than derived once.
 
-**Still not resized.** The evidence now points away from the flag rather than
-toward it, but the trend panel records the bucket distribution every sweep so
-net change *per horizon* is answerable from the archive. Watch the
-resident-memory row meanwhile.
+#### The short-dated component is bounded, not exponential
+
+Everything in the sub-7d window leaves it within seven days by construction, so
+Little's Law gives a *hard* bound rather than a projection. `L = λW`, with
+`W ≤ 7 days` definitional:
+
+| | Value |
+| --- | --- |
+| Observed sub-7d population | 26,760 |
+| Observed closure rate | 23,792 /day |
+| Implied mean residence, `L / λ` | **1.12 days** |
+| Ceiling at this closure rate, if `W` were the full 7 days | **166,545** |
+
+The implied residence reproduces the observed population, which is the same as
+saying **the component is already at its plateau**: the 8-hour window caught a
+listing burst, not a trend. It cannot compound, because the outflow is
+mechanically tied to the inflow one week later.
+
+#### Projecting only what compounds
+
+Long-dated (30d+) is the part that can grow without bound. Treating the sub-30d
+population as a fixed 34,089 offset:
+
+| | 1 GB @ 75% | 2 GB @ 75% |
+| --- | --- | --- |
+| Long-dated must reach | 1,676,205 | 3,575,887 |
+| At the observed **1.91%/day** | **185 days** | 226 days |
+
+For contrast, the naive whole-population rate over the same sweep pair is
+**31.6%/day**, which reaches 1 GB in **11 days**. Same two sweeps, same
+arithmetic, 11 days versus 185 — the entire difference is whether the growth is
+counted in a component that can accumulate.
+
+#### Observation count
+
+**Every rate above rests on n = 1: a single 8.2-hour window.** The whole-
+population rate computed from the *other* available pair (41.7 hours) is
+10.8%/day rather than 31.6%/day, so the headline rate is not even stable across
+the two pairs on record. A weekend sports-listing burst is indistinguishable
+from expansion at this resolution, and neither derived date should be treated as
+a forecast. They are recorded so the archive can overturn them.
+
+**Still not resized.** The evidence points away from the flag rather than toward
+it, and the trend panel records the bucket distribution every sweep so net
+change *per horizon* is answerable from data. Watch the resident-memory row
+meanwhile.
 
 ```ini
 # /etc/systemd/system/kalshi-scanner.service
