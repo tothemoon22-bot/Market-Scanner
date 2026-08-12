@@ -808,24 +808,34 @@ Two details of the check are load-bearing, and both were found by writing it:
   only statement of the requirement that a dependency-pruning pass cannot talk
   itself out of.
 
-Two further gaps surfaced in the same audit and are recorded rather than fixed,
-because neither is live:
+**And then the fix inherited the same blind spot.** The first version of
+`test_clean_install.py` ran its probe with `cwd` set to the repository root, on
+the reasoning that this is what the deployment does. That reasoning imported the
+bug. Running from the repository root puts the repository on `sys.path`, so
+`import dashboard` succeeded *via the working directory* and the test could not
+see that `[tool.setuptools.packages.find]` packaged only `src`. It passed, for
+the wrong reason, one layer further in than the suite it replaced.
 
-- Five declared dependencies — `sqlalchemy`, `aiosqlite`, `structlog`, and
-  arguably `pydantic` — are imported by no first-party module. They are
-  scaffolding from the Part 0 design (a storage layer, structured logging) that
-  no part of the finished instrument uses. Removing them is a judgement call
-  about install weight on a small box, not a correctness fix, so it is flagged
-  and not taken.
-- `[tool.setuptools.packages.find] include = ["src*"]` packages *only* `src`.
-  After `pip install -e .`, `dashboard`, `scanner` and `monitor` are importable
-  solely because the working directory is on `sys.path` — verified by importing
-  them from another directory and watching all three fail. Every documented
-  invocation is `python -m ...` from the repository root and the systemd unit
-  sets `WorkingDirectory=/opt/market-scanner`, so nothing is broken today. But
-  that line in the unit file is doing load-bearing work that nothing labels as
-  such, and one relocation would turn it into a deploy failure of exactly the
-  kind above.
+> **A test written to catch environment divergence, written inside the
+> environment whose assumption it needed to test, is item 3 with a bigger
+> subject.** The guard scanning for placeholders matched its own comment; this
+> one satisfied its own import.
+
+The probe now chdirs somewhere with no relationship to the source tree, and the
+packaging is fixed rather than merely recorded — `include` lists all four
+shipped trees. Note precisely what that did and did not buy: `dashboard/app.py`
+still reads `Path("monitor/baseline.json")` and every ledger under
+`data/monitor/` is equally relative, so `WorkingDirectory` remains load-bearing
+for **data**. The fix removed the *import* coupling and nothing else, and
+`test_the_data_paths_are_still_cwd_relative` pins that sentence to the code so
+it cannot quietly become false in either direction.
+
+One further gap is recorded rather than fixed, because it is not live:
+
+- Four declared dependencies — `sqlalchemy`, `aiosqlite`, `structlog`, and
+  redundantly `pydantic` — are imported by no first-party module. Which of them
+  are actually dead is a question static analysis cannot answer, and the answer
+  turned out to differ per package; see the section below.
 
 The fifth standing question follows:
 
@@ -867,6 +877,55 @@ forget it, to default it, or to decide it means something slightly different at
 this call site. A single resolved value in shared state removes the invitation.
 Shape 2 is the one this does not reach — there is no argument and no caller, and
 the only defence is to run the thing somewhere that is not your machine.
+
+### "Imported nowhere" is not evidence of "unused"
+
+The dependency audit produced one result that generalizes further than the bug
+that prompted it, and it belongs beside the divergence shapes because it is the
+same mistake about a different substrate: **taking a static reading of a
+runtime-resolved thing.**
+
+`websockets` is declared and imported by nothing in this repository. Deleting it
+as dead weight would have been defensible from every piece of evidence a grep
+can produce, and it would have silently turned off the dashboard's live push.
+`uvicorn` requires only `click` and `h11`;
+`uvicorn/protocols/websockets/auto.py` sets `AutoWebSocketsProtocol` to `None`
+when neither `websockets` nor `wsproto` is installed, after which the server
+rejects the `/ws` upgrade. **The page still loads.** That makes it strictly
+worse than the undeclared-`fastapi` case, which at least crashed at import.
+
+> **"Imported nowhere" is evidence of "unused" only for dependencies resolved
+> by import.** Protocol auto-detection, plugin registries, driver lookup by URL
+> scheme and entry points are all invisible to static analysis by construction.
+> Ask how a dependency is *resolved* before concluding anything from where its
+> name appears.
+
+Asked of the other four individually, the answers differ — which is the point,
+because a single verdict for all of them would have been wrong four ways:
+
+| | Resolved by | Verdict |
+| --- | --- | --- |
+| `websockets` | uvicorn protocol auto-detection, at server startup | **Load-bearing**, invisibly |
+| `aiosqlite` | SQLAlchemy driver lookup from a `sqlite+aiosqlite://` URL | **Dormant** — dead today, invisibly load-bearing the moment the storage layer is used |
+| `sqlalchemy` | import | **Dead** — `src/storage/` is an empty `__init__.py` |
+| `structlog` | import | **Dead** — the scanner logs to an in-memory ring instead |
+| `pydantic` | required by `fastapi` | **Redundant**, not dead — installed regardless, at a floor *higher* than ours |
+
+`aiosqlite` is the one worth dwelling on, because it is `websockets` with the
+fuse not yet lit. SQLAlchemy does not require it — the name appears in
+SQLAlchemy's metadata only behind `extra == "aiosqlite"`, and an extra nobody
+installs satisfies nothing. It is resolved from the URL scheme at connect time.
+So the day anything writes `sqlite+aiosqlite://`, that dependency becomes
+load-bearing without a single import appearing anywhere to justify it.
+
+None of this is written as comments, because **a comment can be argued with by
+the next person pruning dependencies and a failing test cannot**. Each row is an
+assertion in `tests/test_dependencies.py`: that uvicorn still resolves a WS
+protocol; that `src/storage/` is still empty and no driver URL has appeared;
+that `fastapi` still requires `pydantic`. And the guard that cannot go stale —
+`test_the_registry_covers_every_unimported_dependency` — fails the day a
+dependency nothing imports is added without a classification, so the table
+describes the code rather than the day it was written.
 
 Item 5 is a separate sub-class, and the reason it needs its own name is that
 the first structure does not describe it. Nothing there drew a bad standard —

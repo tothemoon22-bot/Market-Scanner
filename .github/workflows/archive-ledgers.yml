@@ -22,10 +22,25 @@ permissions:
 jobs:
   archive:
     runs-on: ubuntu-latest
-    # SCANNER_URL is a repository variable, not a secret: it is a public,
-    # unauthenticated read-only endpoint. Nothing here is confidential.
-    if: vars.SCANNER_URL != ''
     steps:
+      # This job used to carry `if: vars.SCANNER_URL != ''`. That is the
+      # swallowing handler in CI form: with the variable unset the job skipped,
+      # reported no failure, and durability was notional while the workflow list
+      # looked healthy. An unconfigured archive is a failure, not a no-op.
+      #
+      # SCANNER_URL is a repository *variable*, not a secret: it is a public,
+      # unauthenticated read-only endpoint. Nothing here is confidential.
+      - name: Require SCANNER_URL
+        if: vars.SCANNER_URL == ''
+        run: |
+          echo "::error::SCANNER_URL is not set, so no ledger has ever been" \
+               "archived and instance loss would cost the entire history." >&2
+          echo "Set it at Settings -> Secrets and variables -> Actions ->" >&2
+          echo "Variables -> New repository variable:" >&2
+          echo "  Name:  SCANNER_URL" >&2
+          echo "  Value: https://aimarketscanner.cloud" >&2
+          exit 1
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5

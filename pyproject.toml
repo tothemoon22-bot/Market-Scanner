@@ -35,7 +35,17 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["src*"]
+# All four shipped trees, not just `src`. Until this listed them, `pip install
+# -e .` packaged only `src`, and `dashboard`, `scanner` and `monitor` imported
+# solely because the working directory happened to be on `sys.path` -- an
+# undeclared coincidence one `WorkingDirectory` change away from removing three
+# packages. `tests` and `tools` are deliberately absent: neither ships.
+include = ["src*", "dashboard*", "scanner*", "monitor*"]
+
+[tool.setuptools.package-data]
+# The PWA is served off disk relative to `dashboard/__file__`, so a package
+# without these is importable and broken.
+dashboard = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

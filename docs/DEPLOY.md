@@ -243,17 +243,56 @@ write permission, so pulling costs the box nothing. Pushing *from* the box would
 have meant putting a repository credential on a machine whose entire design is
 that it holds none — the startup guard exits non-zero if one appears.
 
-Set `SCANNER_URL` as a repository **variable**, not a secret: the endpoint is
-public by design. Ledger contents are market statistics — no credentials, no
-positions, no personal data.
+### ⚠️ One manual step, and until it is done there is no durability at all
+
+The Action **has never run**, because `SCANNER_URL` is unset. It cannot be set
+from here — it is repository configuration, not code.
+
+In GitHub: **Settings → Secrets and variables → Actions → Variables tab →
+New repository variable**
+
+| Field | Value |
+| --- | --- |
+| Name | `SCANNER_URL` |
+| Value | `https://aimarketscanner.cloud` |
+
+A **variable**, not a secret: the endpoint is public and unauthenticated by
+design, and the ledger contents are market statistics — no credentials, no
+positions, no personal data. Putting it in Secrets would hide it from the job
+log for no benefit.
+
+Then **Actions → Archive scanner ledgers → Run workflow** to confirm it works
+rather than waiting until Monday to find out it does not. The endpoint has been
+verified end-to-end against `python -m monitor.archive` — manifest, per-ledger
+fetch and sha256 verification all pass — so a failure at this point is
+configuration, not the code.
+
+The job no longer skips when the variable is missing. It used to carry
+`if: vars.SCANNER_URL != ''`, which is the swallowing handler in CI form: with
+nothing set it skipped, reported no failure, and the workflow list looked
+healthy while durability was notional. It now fails with the instructions above.
 
 ### What instance loss actually costs
 
-> **At most one week of ledger history**, bounded by the schedule. Not zero.
+> **Right now: everything.** No ledger has ever been archived. The partition
+> history, band transitions, the suppression ledger, the population trend, the
+> discontinuity markers and the proximity/restart record exist on one disk and
+> nowhere else, and the mechanism built to prevent exactly that has not run once.
+>
+> **Once `SCANNER_URL` is set and the job has run: at most one week**, bounded
+> by the schedule. Not zero.
 
-Say it that way rather than calling the ledgers durable. Everything since the
-last successful Monday fetch is on one disk and nowhere else. Snapshots and
+Say it the second way only after the first Monday fetch succeeds. Everything
+since the last successful fetch is on one disk regardless. Snapshots and
 `metrics.json` are unaffected — those the weekly job produces itself.
+
+The box reports this from its own side. `ledger_archive` on the health panel is
+a registered subsystem: it goes `OK` when a fetch is served, and `FAILING` once
+the box has been up longer than the 10-day archive window with no fetch at all —
+which is the state it is in now. A `FAILING` subsystem carries the same
+consecutive-failure push as every other one, so an archive that silently stops
+being pulled is no longer indistinguishable from one that has not been pulled
+yet.
 
 Restoring onto a fresh box is a copy back:
 

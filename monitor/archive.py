@@ -46,6 +46,7 @@ LEDGER_FILES: dict[str, Path] = {
     "population_trend": Path("data/monitor/population.jsonl"),
     "manual_reviews": Path("data/monitor/manual_reviews.jsonl"),
     "discontinuities": Path("data/monitor/discontinuities.jsonl"),
+    "watch": Path("data/monitor/watch.jsonl"),
 }
 
 #: Where the weekly job commits them. **Not** under ``data/``, which is

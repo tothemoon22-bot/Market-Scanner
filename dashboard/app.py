@@ -91,6 +91,7 @@ async def api_ledgers() -> JSONResponse:
     data.
     """
     state.ledgers_served_at = now()
+    state.source("ledger_archive").ok()
     return JSONResponse({"ledgers": archive.manifest(), "served_at": now().isoformat()})
 
 
@@ -140,6 +141,12 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 async def startup() -> None:
     guard.assert_no_credentials()
     if _runtime["snapshot_source"] is None:
+        # Restores the proximity window from the ledger and records this start,
+        # so "days since a trigger was within 20% of firing" survives a deploy
+        # instead of being silently bounded above by uptime. Not called in
+        # snapshot mode: that is a replay, and a replay must not append a
+        # restart to the live record.
+        state.begin_session()
         _runtime["task"] = asyncio.create_task(engine.run(state, load_baseline()))
 
 

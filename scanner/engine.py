@@ -27,7 +27,7 @@ import httpx
 
 from monitor import aggregate as aggregate_mod
 from monitor import alerts as alerts_mod
-from monitor import collect, pipeline, population, reviews
+from monitor import archive, collect, disk, pipeline, population, reviews, watch
 from monitor.checks import tradeable_size
 from scanner import funnel, history, notify, reference, triggers
 from scanner.state import CONSECUTIVE_FAILURE_ALERT, Outcome, ScannerState, now
@@ -172,6 +172,8 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
             state.tripwire = computed["deci_cent_fee_free_tripwire"]
             state.ready = True
             source.ok()
+            _assess_archive(state)
+            _record(state, "disk_sample", disk.sample)
 
             history.record(state.partitions or [])
 
@@ -480,9 +482,71 @@ def _record_proximity(state: ScannerState) -> None:
     if not measured:
         return
     peak = max(measured)
-    state.peak_proximity_pct = peak
-    if peak >= 20:
+    # Persisted so the window survives a deploy. Only a *new* all-time peak is
+    # written, so the ledger grows with information rather than with time --
+    # and the in-memory value is the restored one until something beats it,
+    # rather than this session's max.
+    if state.peak_proximity_pct is None or peak > state.peak_proximity_pct:
+        state.peak_proximity_pct = peak
+        if state.watch_persisted:
+            _record(state, "watch_ledger", lambda: watch.record_peak(peak))
+    if peak >= watch.WITHIN_PCT:
         state.last_within_20_at = now()
+        if state.watch_persisted:
+            _record(state, "watch_ledger", lambda: watch.record_within_20(peak))
+
+
+def _assess_archive(state: ScannerState) -> None:
+    """Turn "nobody has pulled the ledgers" into a subsystem state.
+
+    ``ledger_archive`` was registered in ``SUBSYSTEMS`` and nothing ever set it,
+    so it rendered NEVER RUN forever and had no path to the consecutive-failure
+    alert every other subsystem has. That is the failure this section is about,
+    applied to the mechanism that exists to prevent losing the record of it:
+    **an archive that silently never runs looks exactly like one that has not
+    run yet.**
+
+    The box cannot see the Action fail. What it can see is that nothing has
+    fetched, which is the same thing from the other side.
+    """
+    served = state.ledgers_served_at
+    stale_after = archive.ARCHIVE_STALE_AFTER_DAYS * 86400
+    uptime = (now() - state.started_at).total_seconds()
+
+    if served is None:
+        # A fresh box legitimately has not been pulled yet. Once it has been up
+        # longer than the whole archive window with no fetch at all, "not yet"
+        # has become "not happening", and durability is notional.
+        if uptime > stale_after:
+            state.source("ledger_archive").failed(
+                f"no ledger fetch in {uptime / 86400:.1f} days of uptime; "
+                "the weekly archive has never run and instance loss would cost "
+                "the entire history"
+            )
+        return
+
+    age = (now() - served).total_seconds()
+    if age > stale_after:
+        state.source("ledger_archive").failed(
+            f"last ledger fetch {age / 86400:.1f} days ago, past the "
+            f"{archive.ARCHIVE_STALE_AFTER_DAYS}d window"
+        )
+    else:
+        state.source("ledger_archive").ok()
+
+
+def _record(state: ScannerState, source: str, write: Any) -> None:
+    """Write to a ledger, recording the failure rather than swallowing it.
+
+    A ledger write must not cost a sweep, and a ledger that silently stops
+    being written is exactly the shape this project keeps finding -- so the
+    handler produces a state instead of a log line.
+    """
+    try:
+        write()
+        state.source(source).ok()
+    except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
+        state.source(source).failed(f"{type(exc).__name__}: {exc}", exc)
 
 
 def collect_categories() -> list[str]:

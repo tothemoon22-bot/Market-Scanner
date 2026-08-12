@@ -11,9 +11,10 @@ import threading
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
-from monitor import discontinuity, reviews
+from monitor import discontinuity, disk, reviews, watch
 from monitor.aggregate import ALERT_DISTINCT_SPREADS, MAX_DISTINCT_SPREADS
 from monitor.archive import ARCHIVE_STALE_AFTER_DAYS
 from scanner import process
@@ -59,6 +60,8 @@ SUBSYSTEMS = (
     "coinbase",
     "ntfy",
     "ledger_archive",
+    "watch_ledger",
+    "disk_sample",
 )
 
 #: Consecutive failures of one subsystem before it pushes on its own account,
@@ -254,6 +257,14 @@ class ScannerState:
     last_within_20_at: datetime | None = None
     peak_proximity_pct: float | None = None
 
+    #: Restored from ``data/monitor/watch.jsonl`` by :meth:`begin_session`, so
+    #: the window survives a deploy. Zero restarts is a confirmed zero, not an
+    #: absence -- the first session has genuinely never restarted.
+    restarts: int = 0
+    restarts_24h: int = 0
+    last_restart_at: datetime | None = None
+    watch_persisted: bool = False
+
     #: Memory trend. The current reading alone cannot distinguish steady from
     #: growing, which is the only thing a 24h memory gate cares about. None
     #: until the first successful sample -- never zero; see scanner/process.py.
@@ -266,6 +277,23 @@ class ScannerState:
 
     def source(self, name: str) -> SourceHealth:
         return self.sources.setdefault(name, SourceHealth(name))
+
+    def begin_session(self, path: Path | None = None) -> None:
+        """Restore the proximity window from the ledger and record this start.
+
+        Called explicitly at startup rather than in ``__init__``: constructing a
+        state object must not write to disk, or importing the module in a test
+        would append a spurious restart.
+        """
+        restored = watch.begin_session(path) if path else watch.begin_session()
+        if restored.observing_since is not None:
+            self.observing_since = restored.observing_since
+        self.peak_proximity_pct = restored.peak_proximity_pct
+        self.last_within_20_at = restored.last_within_20_at
+        self.restarts = restored.restarts
+        self.restarts_24h = restored.restarts_24h
+        self.last_restart_at = restored.last_restart_at
+        self.watch_persisted = True
 
     def log(self, kind: str, message: str, **extra: Any) -> None:
         with self._lock:
@@ -376,6 +404,18 @@ class ScannerState:
                         else (now() - self.last_within_20_at).total_seconds() / 86400
                     ),
                     "peak_proximity_pct": self.peak_proximity_pct,
+                    # The window now survives a deploy, but its span is wall
+                    # clock: downtime is not subtracted. Restarts are published
+                    # beside it rather than folded into it, so a gap is visible
+                    # instead of being quietly counted as observation.
+                    "persisted": self.watch_persisted,
+                    "restarts": self.restarts,
+                    "restarts_24h": self.restarts_24h,
+                    "restart_alert_24h": watch.RESTART_ALERT_24H,
+                    "crash_looping": self.restarts_24h >= watch.RESTART_ALERT_24H,
+                    "last_restart_at": (
+                        self.last_restart_at.isoformat() if self.last_restart_at else None
+                    ),
                     # A window that contains a definition change is measured
                     # under two definitions, and every figure above is a
                     # statement about both. Published rather than corrected:
@@ -387,6 +427,7 @@ class ScannerState:
                         )
                     ],
                 },
+                "disk": disk.headroom().as_dict(),
                 "bands": self.bands,
                 "below_par": self.below_par,
                 "population": self.population

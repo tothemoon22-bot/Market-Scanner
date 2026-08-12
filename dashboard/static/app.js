@@ -154,13 +154,25 @@ function renderHero(p) {
       ` — this figure spans both definitions and is not a like-for-like series</div>`
     : "";
 
+  /* The window survives restarts now, but its span is wall clock — downtime is
+     not subtracted. Restarts are shown beside it rather than folded into it, so
+     a gap is visible instead of being counted as observation. */
+  const restarts = (w && w.restarts) || 0;
+  const gaps = !w ? ""
+    : !w.persisted
+      ? ` <span class="dim">· not persisted, resets on restart</span>`
+      : restarts
+        ? ` <span class="dim">· across ${num(restarts)} restart${restarts === 1 ? "" : "s"};` +
+          ` downtime not subtracted</span>`
+        : ` <span class="dim">· no restarts</span>`;
+
   if (!w || w.peak_proximity_pct === null || w.peak_proximity_pct === undefined) {
     $("hero-watch").innerHTML = NO_DATA("no proximity measured yet");
   } else if (w.days_since_within_20 === null) {
     $("hero-watch").innerHTML =
       `no trigger has come within 20% of firing in ` +
       `<b class="num">${num(w.observed_days, 2)}</b> days observed ` +
-      `<span class="dim">(peak ${w.peak_proximity_pct}%)</span>` + spans;
+      `<span class="dim">(peak ${w.peak_proximity_pct}%)</span>` + gaps + spans;
   } else {
     /* The window is always quoted alongside the figure. "0.4 days since" over a
        0.4-day window is not the same claim as over a 30-day one, and the number
@@ -168,7 +180,8 @@ function renderHero(p) {
     $("hero-watch").innerHTML =
       `<b class="num">${num(w.days_since_within_20, 2)}</b> days since a trigger ` +
       `was within 20% of firing ` +
-      `<span class="dim">(over ${num(w.observed_days, 2)} days observed)</span>` + spans;
+      `<span class="dim">(over ${num(w.observed_days, 2)} days observed)</span>` +
+      gaps + spans;
   }
 }
 
@@ -601,7 +614,9 @@ function renderHealth(p) {
   rows.push(suppressedLedgerRow(p));
   rows.push(`<div class="kv"><span class="k">Uptime</span>
     <span class="v num">${age(p.uptime_seconds) ?? NO_DATA("scanner has not started")}</span></div>`);
+  rows.push(restartRow(p));
   rows.push(rssRow(p));
+  rows.push(diskRow(p));
   rows.push(cardinalityRow(p));
   rows.push(archiveRow(p));
   rows.push(degradedRow(p));
@@ -747,6 +762,54 @@ function archiveRow(p) {
       <br><span class="dim">history at risk = time since this fetch</span></span>
     <span class="v num ${a.stale ? "bad" : "good"}">${age(a.age_seconds)} ago
       <br><span class="dim">stale past ${num(a.stale_after_days)}d</span></span></div>`;
+}
+
+/* The other way this box dies. The sweep ledgers grow on every sweep and never
+   shrink, so free space alone is not the measurement — the rate is. A rate with
+   too few samples renders its reason instead of a number, same rule as
+   everywhere else. */
+function diskRow(p) {
+  const d = p.disk;
+  if (!d || d.free_gb === null || d.free_gb === undefined) {
+    return `<div class="kv"><span class="k">Disk headroom</span>
+      <span class="v">${NO_DATA("free space is not readable")}</span></div>`;
+  }
+  const projection = d.days_to_full === null || d.days_to_full === undefined
+    ? `<span class="dim sub">${esc(d.reason)}</span>`
+    : `<span class="${d.warn ? "bad" : "dim"} sub">full in ${num(d.days_to_full, 0)}d ` +
+      `(~${esc(d.exhaustion_at)})</span>`;
+  const rate = d.growth_mb_per_day === null || d.growth_mb_per_day === undefined
+    ? ""
+    : ` · ${d.growth_mb_per_day >= 0 ? "+" : ""}${num(d.growth_mb_per_day, 1)} MB/d`;
+  return `<div class="kv"><span class="k">Disk headroom
+      <br><span class="dim">ledgers grow every sweep and never shrink</span></span>
+    <span class="v num ${d.warn ? "bad" : ""}">${num(d.free_gb, 1)} GB free
+      <span class="dim sub">${num(d.used_pct, 0)}% used · ledgers ${
+        d.ledger_mb === null ? "?" : num(d.ledger_mb, 0) + " MB"}${rate}</span>
+      ${projection}</span></div>`;
+}
+
+/* Small uptime after one deploy and small uptime inside a crash-loop are
+   different states, and uptime alone renders them identically. The restart
+   count in the last 24h is what separates them, so it is its own number rather
+   than something to infer. */
+function restartRow(p) {
+  const w = p.proximity_watch || {};
+  if (!w.persisted) {
+    return `<div class="kv"><span class="k">Restarts</span>
+      <span class="v">${NO_DATA("restart ledger not running (snapshot mode)")}</span></div>`;
+  }
+  const looping = w.crash_looping;
+  const last = w.last_restart_at
+    ? `last ${esc(String(w.last_restart_at).slice(0, 16).replace("T", " "))}Z`
+    : "none recorded";
+  return `<div class="kv"><span class="k">Restarts
+      <br><span class="dim">${looping
+        ? `${w.restarts_24h} in 24h — a deploy is one or two`
+        : "small uptime + climbing count = crash-loop"}</span></span>
+    <span class="v num ${looping ? "bad" : ""}">${num(w.restarts)} total
+      <br><span class="dim ${looping ? "bad" : ""}">${num(w.restarts_24h)} in 24h</span>
+      <span class="dim sub">${last}</span></span></div>`;
 }
 
 function rssRow(p) {

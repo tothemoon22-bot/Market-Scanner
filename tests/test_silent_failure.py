@@ -272,7 +272,27 @@ REVIEWED_SILENT_HANDLERS = {
         "market to the UNATTRIBUTED residual -- the most visible counter in the "
         "system. Asserted in test_population.py."
     ),
-    "monitor/archive.py:159": (
+    "monitor/watch.py:91": (
+        "A kill mid-write leaves a torn final line. Skipping it costs one "
+        "record; refusing to parse the file would lose the whole restart and "
+        "proximity history to protect that one row. Asserted in test_watch.py."
+    ),
+    "monitor/disk.py:63": (
+        "tree_bytes returns None for an unreadable tree, and the panel renders "
+        "'?' for the ledger size rather than 0 MB. A directory that cannot be "
+        "walked is not a directory of size zero."
+    ),
+    "monitor/disk.py:72": (
+        "usage returns all-None for an unreadable filesystem, and the disk row "
+        "renders NO DATA('free space is not readable'). Never 0 bytes free, "
+        "which would read as a full disk."
+    ),
+    "monitor/disk.py:100": (
+        "Same torn-final-line case as monitor/watch.py, for the disk samples. "
+        "One lost sample widens the rate's window; an unreadable file would "
+        "remove the rate entirely."
+    ),
+    "monitor/archive.py:160": (
         "archive.main prints to stderr and returns 1, so the weekly Action fails "
         "loudly. This is a CLI boundary rather than a subsystem: there is no "
         "panel to record to, and the scanner sees the same outage from the other "
