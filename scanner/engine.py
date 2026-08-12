@@ -123,7 +123,6 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
             state.metrics_at = now()
             state.sweep_count += 1
             state.sweep_seconds = time.monotonic() - started
-            state.triggers = [t.as_dict() for t in triggers.evaluate(baseline, computed)]
             funnel.unknown_fee_types.clear()
             state.funnel = funnel.as_dict(funnel.build_from(agg))
             state.unknown_fee_types = dict(funnel.unknown_fee_types)
@@ -171,7 +170,6 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
             await asyncio.to_thread(_reconcile_population, state, ledger, manifest, computed)
             state.partitions = computed["verified_partitions"]["fee_free_detail"]
             state.tripwire = computed["deci_cent_fee_free_tripwire"]
-            _record_proximity(state)
             state.ready = True
             source.ok()
 
@@ -214,7 +212,13 @@ async def full_sweep_loop(state: ScannerState, baseline: dict) -> None:
             }
 
             fired = assessment.alerts
+            # The only trigger evaluation. It runs after assess so the board sees
+            # the same bands and the same fee-change materiality split the alert
+            # layer used -- two evaluations meant the board and the alerts could
+            # disagree about what fired, and the proximity watch recorded the
+            # weaker of the two.
             state.triggers = [t.as_dict() for t in triggers.evaluate(baseline, computed, bands)]
+            _record_proximity(state)
 
             hits = collect.rate_limit_hits
             if hits > state.rate_limit_hits:

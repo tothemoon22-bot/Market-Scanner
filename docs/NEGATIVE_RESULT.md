@@ -15,45 +15,83 @@ once: the tick is 0.1¢ instead of 1¢, and the trading fee is exactly zero.
 Three of them form verified-exhaustive partitions — sets of contracts that must
 sum to $1 by construction, whatever happens in the world.
 
-> **In that segment, across every observation on record, no verified partition
-> has ever presented executable edge at a size of one contract.**
+> **No verified partition has presented edge clearing 20%/yr annualized with
+> capacity beyond the exchange's minimum quote. Observed maximum in the fee-free
+> universe: 3.92%/yr on $0.021 of realisable profit.**
 
-That is the finding. It is a claim about *executability*, and it is the claim
-that has survived contact with the data.
+That is the finding, stated on the criterion the close decision actually used.
 
-Observed cost across the monitored window, three observations per partition
-(2026-08-03, 08-04, 08-05):
+### The strongest observation the project has produced
+
+`KXGDPYEAR-26`, measured 2026-08-11. It is worth setting out in full, because it
+is the best case the exchange has offered in the entire monitored window:
+
+| | |
+| --- | --- |
+| Legs | 14, verified exhaustive — tiles the line, no gap, no overlap |
+| Tick structure | `deci_cent` on every leg — the finest on the exchange |
+| Fee | `fee_multiplier: 0` on every leg — zero, not merely low |
+| Σ asks | **97.90¢** — genuinely below par |
+| Capacity at `size ≥ 1` | **1.00 contracts** — executable |
+| Edge | 2.1¢ × 1 contract = **$0.021** |
+| Horizon | 0.55 years |
+| **Annualized** | **3.92%/yr** |
+
+Every obstacle removed, the basket below par, and the trade executable. And it
+returns **3.92%/yr against a 20%/yr decision threshold** — roughly
+three-quarters of an order of magnitude short — on two cents of realisable
+profit. Two of its binding legs quote exactly 1.00 contracts, the exchange's
+minimum quotable unit.
+
+Observed cost range across the monitored window, four observations per partition
+(2026-08-03, 08-04, 08-05, 08-11):
 
 | Partition | Legs | Range observed |
 | --- | --- | --- |
 | BTC price range, end of 2026 | 28 | 100.5¢ – 107.8¢ |
-| ETH price range, end of 2026 | 18 | 106.7¢ – 114.5¢ |
-| US GDP growth 2026 | 14 | **98.0¢** – 106.3¢ |
+| ETH price range, end of 2026 | 18 | 106.0¢ – 114.5¢ |
+| US GDP growth 2026 | 14 | **97.9¢** – 106.3¢ |
 
-Most of that range sits above par, which is the ordinary case: the basket costs
-more than the dollar it is guaranteed to pay, so the trade is a loss before it
-starts. **One excursion went below.** On 2026-08-05 the GDP partition was
-measured at 98.0¢ — and its binding leg quoted **less than one contract**, so
-tradeable capacity at the `size ≥ 1` gate was zero. Below par, and unbuyable.
+### Where the 20%/yr threshold comes from
+
+**It is not new, and it was not chosen to accommodate this observation.** Without
+that provenance a reader cannot distinguish this restatement from
+goalpost-moving, and they would be right not to.
+
+The Part 0 closing query — the analysis that produced the decision to close —
+was built around a decision rule fixed in advance: *close unless something
+survives a zero fee gate and annualizes above roughly 20%.* It is in the code
+that ran that query:
+
+```python
+# src/research/fee_free_check.py
+# Annualized-return threshold from the closing spec's decision rule.
+ANNUALIZED_GATE = D("0.20")
+```
+
+Checkable in the history rather than asserted:
+
+| | Commit | When |
+| --- | --- | --- |
+| `ANNUALIZED_GATE = 0.20` first committed | `58b1ab4` | 2026-08-03 18:21 UTC |
+| Memo first written, price headline | `43fc327` | 2026-08-03 18:52 UTC |
+| Headline restated on capacity | `5d9fd0b` | 2026-08-11 |
+
+The threshold predates the first headline by half an hour and the second by
+eight days. It is also the figure the standing monitor has used since it was
+built, as the return that would have changed the close decision.
 
 ### The excursion is stronger evidence than its absence would have been
-
-This is worth stating plainly, because it inverts how the result reads.
 
 "These baskets never price below par" is an argument from absence. It is only
 ever as strong as the observation window, and every additional day it survives
 adds very little — while a single counterexample would end it.
 
-"These baskets went below par, and it still produced nothing executable" is an
+"A basket went below par, was executable, and returned 3.92%/yr" is an
 observation. The falsifying condition *occurred*, under the most favourable
-circumstances the exchange offers, and the finding held anyway — not because the
-price stayed on the right side of a line, but because the capacity was not
-there. **The tripwire firing improved this result rather than damaging it.**
-
-That is also why the headline is phrased on capacity rather than on price. Price
-was the weaker of the two available claims, and it has since been falsified while
-the finding survived. See § "Phantom liquidity is a cause, not a filter" for why
-the two are connected rather than merely both true.
+circumstances the exchange offers, and the finding held anyway — because the
+magnitude was nowhere near the threshold that would have changed the decision.
+**The tripwire firing improved this result rather than damaging it.**
 
 ---
 
@@ -289,9 +327,32 @@ The consequence generalizes past this venue:
 > study of this exchange that reads prices without a size gate is measuring
 > quoting minimums and reporting them as mispricings.
 
-That is why the headline of this document is stated on executable capacity
-rather than on price, and why Finding 5's capacity column is the finding rather
-than a caveat to it.
+### At the minimum quote, capacity and quoting granularity are the same number
+
+`KXGDPYEAR-26` on 2026-08-11 sharpens this rather than softening it. Two of its
+binding legs quoted **exactly 1.00 contracts** — the exchange's minimum quotable
+unit. The basket passed the `size ≥ 1` gate and was genuinely executable, for
+$0.021.
+
+So the gate admits the quoting minimum, which means:
+
+> **`size ≥ 1` measures quoting minimums, not depth.**
+
+That confirms the section rather than undermining it. The gate was introduced as
+a *precondition* for a price reading to be meaningful — never as a sufficient
+condition for tradeability — and this observation shows exactly why it cannot
+carry a claim on its own. At one contract there is no way to tell a real offer
+from a placeholder: capacity and quoting granularity are indistinguishable,
+because they are the same number.
+
+**The gate stays at 1.** Raising it to 2, or to any other value, would be tuning
+a gate so that a claim survives, which is the failure this project has spent its
+entire life avoiding — and it is the exact move Finding 5 exists to warn about.
+The claim moves to magnitude instead; the gate stays where the data put it.
+
+That is why the headline of this document is stated on annualized magnitude
+rather than on price or on executability, and why Finding 5's capacity column is
+the finding rather than a caveat to it.
 
 ### The same story as spread compression, from the other side
 
@@ -649,7 +710,7 @@ correctness check on our own ingest: observing it means our book is wrong, not
 that the market is. See the venue notes. That reading is only available once you
 have asked what a check's own failure looks like.
 
-Three of the six are inside the monitor's own correctness and safety machinery,
+Three of the seven are inside the monitor's own correctness and safety machinery,
 which is the uncomfortable part: the code written specifically to stop the
 project fooling itself is the code most prone to it, because it is written
 against the same mental model as the thing it guards.
@@ -666,7 +727,44 @@ checks that are vacuously consistent, coverage tools that do not cover
 themselves, secret scanners that log the secret they found, retry logic that
 retries the health check that decides whether to retry.
 
-Item 5 is the separate sub-class, and the reason it needs its own name is that
+**7. A headline stated on a proxy, twice, falsified by the proxy both times.**
+This one is not about a check at all. It is about what a document claims, and it
+is the most easily repeated of the set.
+
+The headline of this memo has been stated three times:
+
+| | Claim | Outcome |
+| --- | --- | --- |
+| 1 | All three fee-free partitions price **above par** | Falsified 2026-08-05 — `KXGDPYEAR-26` at 98.0¢ |
+| 2 | None presents **executable edge at `size ≥ 1`** | Falsified 2026-08-11 — same partition, 97.9¢, 1.00 contracts |
+| 3 | None clears **20%/yr annualized** beyond the minimum quote | Stands; observed max 3.92%/yr |
+
+**Neither falsification touched the finding.** The project's conclusion did not
+move on either date, and no threshold was adjusted to keep it — the 20%/yr rule
+was written into the Part 0 closing query before the memo existed.
+
+The reason both failed is the same, and it is worth naming:
+
+> **A headline stated on a proxy will be falsified by the proxy rather than by
+> the finding.** Price and executability were both convenient stand-ins for a
+> decision rule that already existed in writing. Each was easier to state, and
+> each was a strictly weaker claim than the rule it stood for.
+
+The generalization:
+
+> **When a decision rule has been written down, the headline belongs on the
+> rule.** Anything else is a presentational convenience that will need an
+> asterisk within weeks — and the asterisk is what makes a correct result look
+> like a retreating one.
+
+The tell is available in advance, before any falsification: **if the headline
+and the decision rule are different sentences, the headline is a proxy.** That
+was true here from the first draft and nobody noticed, because a proxy claim is
+usually the more vivid one — "costs more than the dollar it is guaranteed to
+pay" reads better than "below the annualized threshold the close decision used".
+Vividness is exactly what makes it tempting and exactly what makes it fragile.
+
+Item 5 is a separate sub-class, and the reason it needs its own name is that
 the first structure does not describe it. Nothing there drew a bad standard —
 the handler was correct. **The instrument was made silent by a decision to be
 robust.** Both questions therefore have to be asked, because neither implies the
@@ -734,6 +832,34 @@ Every derived date in `docs/DEPLOY.md` carries its observation count for this
 reason. **n = 1** sits next to 185 days, and the whole-population rate from the
 *other* pair on record is 10.8%/day rather than 31.6%, so the headline is not
 stable across the two observations that exist.
+
+### An absolute count on a growing population is a moving target
+
+A third instance, and it failed faster than either of the others.
+
+The scheduled-fee-change trigger fires only on *material* changes, and one
+criterion was breadth: material if the batch touched more than **15 series**. The
+figure came from a single observed batch of 11. **Six days later the same routine
+MLB batch spanned 19 series** and the trigger began firing every sweep — on
+exactly the routine noise the criterion existed to exclude.
+
+The threshold was not wrong by a little. It was the wrong *kind* of quantity:
+
+> **On an exchange whose market count moves on the order of 10% a day, every
+> absolute threshold is a moving target.** It will fail on the timescale of the
+> growth, not on the timescale of the phenomenon it was chosen to describe.
+
+The replacement is a proportion — more than 10% of the *active* series in any one
+category — which is invariant to the population growing underneath it. The two
+observed batches are 1.47% and 2.54% of active Sports series, both comfortably
+routine, and the same 19 series would be 95% of a 20-series category and
+therefore news. **Identical count, opposite meaning**: precisely what a
+proportion distinguishes and a count cannot.
+
+Thresholds on this exchange should be proportions or rates. The `$25`
+capacity × edge floor and the `size ≥ 1` gate are the deliberate exceptions —
+both are absolute because they denominate in money and contracts, which do not
+inflate with listing volume.
 
 ---
 

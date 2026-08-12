@@ -140,51 +140,71 @@ def test_one_material_change_among_a_hundred_routine_ones_still_fires():
 # multiplier moving to 1 on a fee-charging series is routine one change at a
 # time, and the same change across a hundred series is a schedule revision.
 
-MLB_CATEGORIES = {f"KXMLB{i}": "Sports" for i in range(200)}
+#: Active Sports series measured in the committed snapshot. The denominator is
+#: series with open markets, not the registry, which lists thousands with
+#: nothing listed and would understate every share.
+ACTIVE_SPORTS = 748
 
 
-def _broad(n_series: int, category_of=lambda i: "Sports") -> tuple[dict, dict]:
-    changes = [
-        {"series_ticker": f"KXMLB{i}", "fee_multiplier_override": 1,
-         "fee_type_override": "quadratic"}
-        for i in range(n_series)
-    ]
-    cats = {f"KXMLB{i}": category_of(i) for i in range(n_series)}
-    return {"series": [], "events": changes}, cats
+def _sports_universe(n_active: int = ACTIVE_SPORTS) -> dict[str, str]:
+    return {f"KXMLB{i}": "Sports" for i in range(n_active)}
 
 
-def test_a_broad_change_with_no_individually_material_one_fires():
-    """The gap breadth closes: every change routine, the batch is not."""
-    fee_changes, cats = _broad(alerts.BREADTH_SERIES_THRESHOLD + 1)
-    fired = alerts.evaluate({}, FEE_FREE_CURRENT, fee_changes, None, cats)
-    assert _fired(fired, "material scheduled fee changes")
-    split = alerts.classify_fee_changes(fee_changes, {"KXGDPYEAR"}, cats)
-    assert split["broad"] and split["n_material"] == alerts.BREADTH_SERIES_THRESHOLD + 1
-    assert any("breadth threshold" in r for r in split["breadth_reasons"])
+def _batch(n_series: int) -> dict:
+    return {
+        "series": [],
+        "events": [
+            {"series_ticker": f"KXMLB{i}", "fee_multiplier_override": 1,
+             "fee_type_override": "quadratic"}
+            for i in range(n_series)
+        ],
+    }
 
 
-def test_the_breadth_threshold_is_silent_one_series_inside_it():
-    fee_changes, cats = _broad(alerts.BREADTH_SERIES_THRESHOLD)
-    fired = alerts.evaluate({}, FEE_FREE_CURRENT, fee_changes, None, cats)
-    assert not _fired(fired, "material scheduled fee changes")
+@pytest.mark.parametrize("touched,label", [(11, "2026-08-05"), (19, "2026-08-11")])
+def test_both_observed_mlb_batches_classify_routine(touched, label):
+    """Required by the spec, and the reason the absolute count was dropped.
 
-
-def test_the_observed_live_batch_stays_routine_under_the_breadth_rule():
-    """100 changes across 11 MLB series, one category. Measured 2026-08-05.
-
-    If breadth reclassified the observed routine shape, the trigger would fire
-    every sweep again and the narrowing would have achieved nothing.
+    15 was set from the first batch and the second one broke it six days later.
+    Whatever replaces it must classify both as routine or it has learnt nothing.
     """
-    changes = [
-        {"series_ticker": f"KXMLB{i % 11}", "fee_multiplier_override": 1,
-         "fee_type_override": "quadratic"}
-        for i in range(100)
-    ]
-    cats = {f"KXMLB{i}": "Sports" for i in range(11)}
-    split = alerts.classify_fee_changes({"series": [], "events": changes}, set(), cats)
-    assert split["n_series_touched"] == 11
-    assert not split["broad"], "11 series in one category is the routine shape"
-    assert split["n_material"] == 0 and split["n_routine"] == 100
+    split = alerts.classify_fee_changes(_batch(touched), set(), _sports_universe())
+    assert split["n_series_touched"] == touched
+    assert not split["broad"], f"the {label} batch must stay routine"
+    assert split["n_material"] == 0 and split["n_routine"] == touched
+    assert D(split["category_shares_pct"]["Sports"]) < alerts.BREADTH_CATEGORY_SHARE_PCT
+
+
+def test_a_single_category_revision_fires_on_share():
+    """What category-alone would miss: many series, one category."""
+    touched = int(ACTIVE_SPORTS * 0.2)
+    split = alerts.classify_fee_changes(_batch(touched), set(), _sports_universe())
+    assert split["broad"] and split["n_material"] == touched
+    assert any("active Sports series" in r for r in split["breadth_reasons"])
+
+
+def test_the_share_threshold_is_silent_just_inside_it():
+    universe = _sports_universe(100)
+    inside = alerts.classify_fee_changes(_batch(10), set(), universe)
+    assert D(inside["category_shares_pct"]["Sports"]) == alerts.BREADTH_CATEGORY_SHARE_PCT
+    assert not inside["broad"], "at the threshold, not over it"
+    assert alerts.classify_fee_changes(_batch(11), set(), universe)["broad"]
+
+
+def test_identical_counts_in_different_categories_classify_differently():
+    """The whole point of proportion. 19 of 748 is noise; 19 of 20 is news."""
+    noise = alerts.classify_fee_changes(_batch(19), set(), _sports_universe())
+    news = alerts.classify_fee_changes(_batch(19), set(), _sports_universe(20))
+    assert noise["n_series_touched"] == news["n_series_touched"] == 19
+    assert not noise["broad"] and news["broad"], (
+        "identical count, opposite meaning -- an absolute threshold cannot see this"
+    )
+
+
+def test_the_absolute_count_threshold_is_gone():
+    """It failed within a week against a population moving ~10%/day."""
+    assert not hasattr(alerts, "BREADTH_SERIES_THRESHOLD")
+    assert isinstance(alerts.BREADTH_CATEGORY_SHARE_PCT, D)
 
 
 def test_crossing_a_category_boundary_is_material_at_any_count():

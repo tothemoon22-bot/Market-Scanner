@@ -57,6 +57,10 @@ class Trigger:
     def has_distance(self) -> bool:
         return self.proximity_pct is not None
 
+    #: Acknowledgment for the observation this trigger is firing about, if one
+    #: has been recorded. Set by `evaluate`; never edits the baseline.
+    acknowledged: dict[str, Any] | None = None
+
     @property
     def measured(self) -> bool:
         """Rankable only when both the distance *and* the reading exist.
@@ -68,10 +72,27 @@ class Trigger:
         """
         return self.proximity_pct is not None and self.value is not None
 
+    @property
+    def rankable(self) -> bool:
+        """Measured, and firing about something nobody has written up yet.
+
+        An acknowledged trigger is excluded for the same reason a NO DATA one
+        is: it is not the closest thing to watch. The tick-structure trigger
+        fires permanently because the baseline is immutable and will never
+        contain a structure that appeared afterwards -- so without this it holds
+        the hero slot forever and hides whatever is genuinely closest.
+        """
+        return self.measured and self.acknowledged is None
+
     def as_dict(self) -> dict[str, Any]:
-        """Payload shape. `measured` is computed here so the client cannot
-        re-derive it differently."""
-        return {**self.__dict__, "measured": self.measured, "has_distance": self.has_distance}
+        """Payload shape. Derived flags are computed here so the client cannot
+        re-derive them differently."""
+        return {
+            **self.__dict__,
+            "measured": self.measured,
+            "rankable": self.rankable,
+            "has_distance": self.has_distance,
+        }
 
 
 def _proximity(value: D, baseline: D, threshold: D) -> tuple[str | None, str]:
@@ -88,7 +109,45 @@ def _binary(fired: bool) -> str:
     return "100.0" if fired else "0.0"
 
 
-def evaluate(baseline: dict, current: dict, bands: dict | None = None) -> list[Trigger]:
+def _apply_acknowledgments(board: list[Trigger], acks: dict) -> list[Trigger]:
+    """Attach an acknowledgment where every observation a trigger fires about
+    has one. A trigger firing about two things, one of them new, stays new."""
+    from dataclasses import replace
+
+    from monitor.acknowledgments import observations_for
+
+    out = []
+    for t in board:
+        if not t.fired:
+            out.append(t)
+            continue
+        observations = observations_for(t.key, t.detail)
+        matched = [acks[(t.key, o)] for o in observations if (t.key, o) in acks]
+        # All of them, not any: an unacknowledged observation keeps the trigger
+        # at full priority even when it fires alongside a known one.
+        if observations and len(matched) == len(observations):
+            out.append(
+                replace(
+                    t,
+                    acknowledged={
+                        "observations": observations,
+                        "at": min(a.at for a in matched),
+                        "memo_section": matched[0].memo_section,
+                        "note": matched[0].note,
+                    },
+                )
+            )
+        else:
+            out.append(t)
+    return out
+
+
+def evaluate(
+    baseline: dict,
+    current: dict,
+    bands: dict | None = None,
+    acknowledgments: dict | None = None,
+) -> list[Trigger]:
     """One Trigger per alert condition in monitor/alerts.py, in board order."""
     out: list[Trigger] = []
 
@@ -178,20 +237,43 @@ def evaluate(baseline: dict, current: dict, bands: dict | None = None) -> list[T
     )
 
     # 3 --- scheduled fee changes -----------------------------------------
+    # The board watches *material* changes, matching alerts.classify_fee_changes.
+    # Counting raw pending changes made this fire on every sweep -- 100 routine
+    # per-event MLB overrides -- while the alert layer correctly stayed silent,
+    # so the board and the alert disagreed about what "fired" means and the
+    # trigger took the hero slot on noise.
+    split = _get(current, "fee_change_split", default=None)
     scheduled = _get(current, "fee_changes", "count", default=None)
+    material = None if split is None else split.get("n_material")
     out.append(
         Trigger(
             key="fee_changes",
             label="Scheduled fee changes",
-            value=None if scheduled is None else str(scheduled),
-            unit="pending changes",
+            value=None if material is None else str(material),
+            unit="material changes",
             baseline="0",
             threshold="any",
-            condition="the exchange publishes a pending per-series or per-event fee change",
-            proximity_pct=None if scheduled is None else _binary(scheduled > 0),
-            fired=bool(scheduled),
+            condition="the exchange publishes a fee change affecting the fee-free "
+            "universe, setting a multiplier to 0, introducing an unknown fee_type, "
+            "or spanning a category",
+            proximity_pct=None if material is None else _binary(material > 0),
+            fired=bool(material),
             memo_section="What would change the conclusion",
-            no_data_reason="" if scheduled is not None else "fee-change endpoints not yet polled",
+            no_data_reason=(
+                ""
+                if material is not None
+                else "fee-change endpoints not yet polled"
+                if scheduled is None
+                else "polled, but materiality not yet classified"
+            ),
+            detail={
+                "n_total": None if split is None else split.get("n_total"),
+                "n_routine": None if split is None else split.get("n_routine"),
+                "category_shares_pct": {} if split is None else split.get(
+                    "category_shares_pct", {}
+                ),
+                "breadth_reasons": [] if split is None else split.get("breadth_reasons", []),
+            },
         )
     )
 
@@ -301,26 +383,43 @@ def evaluate(baseline: dict, current: dict, bands: dict | None = None) -> list[T
             fired=any(c < 100 for c in costs),
             memo_section="The cleanest single result",
             no_data_reason=reason,
-            detail={"n_markets": _get(current, "deci_cent_fee_free_tripwire", "n_markets")},
+            detail={
+                "n_markets": _get(current, "deci_cent_fee_free_tripwire", "n_markets"),
+                "below_par_events": sorted(
+                    p["event"] for p in partitions if D(p["cost_cents"]) < 100
+                ),
+            },
         )
     )
 
-    return out
+    if acknowledgments is None:
+        from monitor.acknowledgments import load
+
+        acknowledgments = load()
+    return _apply_acknowledgments(out, acknowledgments)
 
 
 def closest(triggers: list[Trigger]) -> Trigger | None:
-    """The closest *measured* trigger, for the hero. None if none is measured.
+    """The closest rankable trigger, for the hero. None if none is rankable.
 
-    Unmeasured triggers are excluded rather than ranked. They are not at 0% and
-    they are not at 100%; they are not on the scale, and putting one in the hero
-    slot hides the closest thing actually being watched.
+    Excluded, for the same reason in both cases -- neither is the closest thing
+    to watch:
+
+    * **unmeasured**: no reading, so not on the scale at all
+    * **acknowledged**: firing about an observation already examined and written
+      up, and permanently, because the baseline it differs from is immutable
     """
-    measured = [t for t in triggers if t.measured]
-    if not measured:
+    rankable = [t for t in triggers if t.rankable]
+    if not rankable:
         return None
-    return max(measured, key=lambda t: D(t.proximity_pct or "0"))
+    return max(rankable, key=lambda t: D(t.proximity_pct or "0"))
 
 
 def unmeasured(triggers: list[Trigger]) -> list[Trigger]:
     """Triggers with no reading, listed separately so they are not just absent."""
     return [t for t in triggers if not t.measured]
+
+
+def acknowledged(triggers: list[Trigger]) -> list[Trigger]:
+    """Fired triggers whose observation has been written up. Still visible."""
+    return [t for t in triggers if t.acknowledged is not None]

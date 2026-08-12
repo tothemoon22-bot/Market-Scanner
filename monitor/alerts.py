@@ -56,24 +56,33 @@ def _get(d: dict, *path: str, default: Any = None) -> Any:
 
 #: --- PROVISIONAL, flagged rather than settled -----------------------------
 #: A scheduled fee change is material on *breadth* alone once it touches more
-#: than this many distinct series, whatever its type or direction.
+#: than this share of the active series in any one category.
 #:
-#: The per-change categories cannot see this. A multiplier moving to 1 on a
-#: fee-charging series reads routine one change at a time -- and 100 such
-#: changes across 100 series in several categories is a schedule revision, which
-#: is precisely the event this trigger exists for.
+#: **An absolute count was tried first and failed within a week.** The threshold
+#: was 15 series, set from a single observation of 11; six days later the same
+#: routine MLB batch spanned 19. On an exchange whose population moves ~10% a
+#: day, an absolute count is a moving target and every one of them will fail
+#: this way on the same timescale. Proportions and rates survive; counts do not.
 #:
-#: Observed distribution, 2026-08-05: 100 scheduled changes across **11 series,
-#: all MLB, one category**. That is the routine shape, and it is the only
-#: observation on record. 11 series is therefore the measured ceiling of
-#: "routine breadth"; 15 sits above it with margin while staying far below the
-#: hundreds a genuine schedule revision would touch.
+#: Category alone is not the replacement either. It misses a *single-category*
+#: schedule revision: 19 of ~750 active Sports series is noise, and 19 of 20
+#: crypto series would be news. Identical count, opposite meaning -- which is
+#: exactly what a proportion distinguishes and a count cannot.
 #:
-#: **n = 1.** Revisit against recorded breadth once the archive has more than
-#: one poll in it -- the routine count is reported every sweep for exactly that.
-BREADTH_SERIES_THRESHOLD = 15
+#: Observed, both routine, both single-category, against active series in the
+#: category (series with open markets in the same sweep):
+#:
+#:   2026-08-05  100 changes, 11 MLB series   =  1.47% of active Sports
+#:   2026-08-11  100 changes, 19 MLB series   =  2.54% of active Sports
+#:
+#: 10% leaves roughly 4x headroom over the observed maximum while still being
+#: unambiguously "a lot of that product line". **n = 2, both from one category.**
+#: Known weakness: a small category inflates the share for the same absolute
+#: noise -- one change in a 2-series category is 50%. No floor is added, because
+#: a floor is an absolute count and that is the thing being removed.
+BREADTH_CATEGORY_SHARE_PCT = D(10)
 
-#: A change spanning more than one category is material regardless of count.
+#: A change spanning more than one category is material regardless of size.
 #: Fee schedules are administered per product line; a revision that crosses
 #: category boundaries is a policy change, not a listing operation.
 BREADTH_CATEGORY_THRESHOLD = 1
@@ -126,13 +135,29 @@ def classify_fee_changes(
 
     touched_series = {c.get("series_ticker") for c in scheduled if c.get("series_ticker")}
     touched_categories = {_series_category(s, categories) for s in touched_series}
+
     # Breadth is a property of the whole batch, not of any one change, so it is
     # decided before the per-change loop and applied to all of them.
-    broad_by_series = len(touched_series) > BREADTH_SERIES_THRESHOLD
-    broad_by_category = (
-        len(touched_categories - {"(unknown)"}) > BREADTH_CATEGORY_THRESHOLD
+    #
+    # The denominator is *active* series -- those with open markets in this same
+    # sweep -- rather than the registry, because the registry lists thousands of
+    # series with nothing listed and would understate every share. It is also the
+    # figure the scanner already has, with no extra call.
+    category_size: Counter[str] = Counter(categories.values())
+    touched_per_category: Counter[str] = Counter(
+        _series_category(s, categories) for s in touched_series
     )
-    broad = broad_by_series or broad_by_category
+    shares: dict[str, D] = {}
+    for category, touched in touched_per_category.items():
+        size = category_size.get(category, 0)
+        if category == "(unknown)" or not size:
+            continue
+        shares[category] = (D(touched) * 100 / D(size)).quantize(D("0.01"))
+
+    over_share = {c: s for c, s in shares.items() if s > BREADTH_CATEGORY_SHARE_PCT}
+    broad_by_share = bool(over_share)
+    broad_by_category = len(touched_categories - {"(unknown)"}) > BREADTH_CATEGORY_THRESHOLD
+    broad = broad_by_share or broad_by_category
 
     material, routine = [], []
     for change in scheduled:
@@ -148,10 +173,13 @@ def classify_fee_changes(
         (material if is_material else routine).append(change)
 
     reasons = []
-    if broad_by_series:
+    if broad_by_share:
         reasons.append(
-            f"{len(touched_series)} series touched, over the {BREADTH_SERIES_THRESHOLD} "
-            "breadth threshold"
+            "; ".join(
+                f"{share}% of active {category} series touched, over the "
+                f"{BREADTH_CATEGORY_SHARE_PCT}% threshold"
+                for category, share in sorted(over_share.items())
+            )
         )
     if broad_by_category:
         reasons.append(
@@ -167,6 +195,7 @@ def classify_fee_changes(
         "n_total": len(scheduled),
         "n_series_touched": len(touched_series),
         "categories_touched": sorted(touched_categories),
+        "category_shares_pct": {c: str(s) for c, s in sorted(shares.items())},
         "broad": broad,
         "breadth_reasons": reasons,
     }

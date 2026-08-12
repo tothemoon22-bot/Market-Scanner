@@ -100,10 +100,11 @@ function renderHero(p) {
      being watched. Unmeasured ones are listed below rather than dropped —
      absent and zero must not look alike. */
   const triggers = p.triggers || [];
-  const measured = triggers.filter((t) => t.measured);
+  const rankable = triggers.filter((t) => t.rankable);
   const unmeasured = triggers.filter((t) => !t.measured);
-  const closest = measured.length
-    ? measured.reduce((a, b) => (Number(a.proximity_pct) >= Number(b.proximity_pct) ? a : b))
+  const acked = triggers.filter((t) => t.acknowledged);
+  const closest = rankable.length
+    ? rankable.reduce((a, b) => (Number(a.proximity_pct) >= Number(b.proximity_pct) ? a : b))
     : null;
 
   $("hero-closest").innerHTML = closest
@@ -113,8 +114,8 @@ function renderHero(p) {
       (closest.detail && closest.detail.fired_because
         ? ` <span class="dim">(${esc(closest.detail.fired_because)})</span>` : "")
     : NO_DATA(
-        measured.length === 0 && triggers.length
-          ? "no trigger has both a reading and a distance yet"
+        triggers.length
+          ? "every trigger is either unmeasured or acknowledged"
           : "no sweep has completed yet");
 
   $("hero-unmeasured").innerHTML = unmeasured.length
@@ -123,6 +124,17 @@ function renderHero(p) {
         `<span class="chip warn" title="${esc(t.no_data_reason || "no reason recorded")}">` +
         `${esc(t.label)}</span>`).join(" ")
     : `<span class="dim">all ${num(triggers.length)} triggers measured</span>`;
+
+  /* Acknowledged triggers are excluded from ranking but never hidden: an
+     acknowledgment says an observation was examined and written up, not that it
+     stopped being true. */
+  $("hero-acknowledged").innerHTML = acked.length
+    ? `<span class="dim">fired, examined, not ranked:</span> ` +
+      acked.map((t) =>
+        `<span class="chip good" title="${esc((t.acknowledged.note || "") +
+          " — see docs/NEGATIVE_RESULT.md § " + t.acknowledged.memo_section)}">` +
+        `${esc(t.label)} ✓ ${esc(t.acknowledged.at)}</span>`).join(" ")
+    : `<span class="dim">nothing acknowledged</span>`;
 
   const w = p.proximity_watch;
   if (!w || w.peak_proximity_pct === null || w.peak_proximity_pct === undefined) {
@@ -188,6 +200,10 @@ function renderTriggers(p) {
         <span class="pct">${has ? `${prox}%` : NO_DATA(t.no_data_reason)}</span>
       </div>
       <div class="cond">fires when ${esc(t.condition)}</div>
+      ${t.acknowledged ? `<div class="vals"><span class="good">FIRED — acknowledged
+        ${esc(t.acknowledged.at)}</span> · see NEGATIVE_RESULT.md §
+        ${esc(t.acknowledged.memo_section)}
+        <br><span class="dim">${esc(t.acknowledged.observations.join(", "))}</span></div>` : ""}
       <div class="vals">now ${t.value === null ? "—" : esc(t.value)} ${esc(t.unit)}
         · baseline ${t.baseline === null ? "—" : esc(t.baseline)}
         · threshold ${esc(t.threshold)}</div>

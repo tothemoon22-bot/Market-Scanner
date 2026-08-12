@@ -79,6 +79,14 @@ def assess(
             set(current.get("fee_free", {}).get("series", [])),
             series_categories,
         )
+        # Published into `current` rather than passed to the trigger board as an
+        # argument. The board must apply the same materiality rule as the alert
+        # -- 100 routine per-event overrides are not a fired trigger -- and an
+        # extra parameter one caller forgets is the divergence shape this
+        # module exists to remove.
+        current["fee_change_split"] = {
+            k: v for k, v in split.items() if k not in ("material", "routine")
+        }
 
     return Assessment(
         alerts=alerts_mod.evaluate(
