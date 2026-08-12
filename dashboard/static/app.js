@@ -137,16 +137,38 @@ function renderHero(p) {
     : `<span class="dim">nothing acknowledged</span>`;
 
   const w = p.proximity_watch;
+  /* A window containing a definition change is measured under two definitions,
+     so the figure is a statement about both. Labelled, never recomputed: the
+     earlier regime measured a different quantity and re-deriving it under the
+     current definition would invent readings that were never taken. */
+  const breaks = (w && w.discontinuities) || [];
+  const spans = breaks.length
+    ? `<div class="warn-inline">measurement redefined mid-window: ` +
+      breaks.map((d) =>
+        `<span title="${esc(d.earlier_regime + " " + d.effect)}">` +
+        `${esc(d.commit)} at ${esc(String(d.at).slice(0, 16).replace("T", " "))}Z` +
+        (d.span_hours === null || d.span_hours === undefined ? ""
+          : ` (earlier regime ran ${num(d.span_hours / 24, 1)}d, ` +
+            `${esc(d.direction)})`) +
+        `</span>`).join("; ") +
+      ` — this figure spans both definitions and is not a like-for-like series</div>`
+    : "";
+
   if (!w || w.peak_proximity_pct === null || w.peak_proximity_pct === undefined) {
     $("hero-watch").innerHTML = NO_DATA("no proximity measured yet");
   } else if (w.days_since_within_20 === null) {
     $("hero-watch").innerHTML =
       `no trigger has come within 20% of firing in ` +
       `<b class="num">${num(w.observed_days, 2)}</b> days observed ` +
-      `<span class="dim">(peak ${w.peak_proximity_pct}%)</span>`;
+      `<span class="dim">(peak ${w.peak_proximity_pct}%)</span>` + spans;
   } else {
+    /* The window is always quoted alongside the figure. "0.4 days since" over a
+       0.4-day window is not the same claim as over a 30-day one, and the number
+       alone reads as the second. */
     $("hero-watch").innerHTML =
-      `<b class="num">${num(w.days_since_within_20, 2)}</b> days since a trigger was within 20% of firing`;
+      `<b class="num">${num(w.days_since_within_20, 2)}</b> days since a trigger ` +
+      `was within 20% of firing ` +
+      `<span class="dim">(over ${num(w.observed_days, 2)} days observed)</span>` + spans;
   }
 }
 
@@ -733,9 +755,26 @@ function rssRow(p) {
     return `<div class="kv"><span class="k">Resident memory</span>
       <span class="v">${NO_DATA("RSS is not readable on this platform")}</span></div>`;
   }
+  /* The current reading alone cannot answer what a memory gate asks. 73 MB
+     steady and 73 MB climbing render identically, and the difference is the
+     whole criterion — so peak and growth-since-start are shown beside it, with
+     the window they were observed over. */
+  const growth = proc.rss_growth_mb;
+  const climbing = growth !== null && growth !== undefined && growth > 0;
+  const trend = proc.rss_peak_mb === null || proc.rss_peak_mb === undefined
+    ? ""
+    : `<span class="dim sub">peak <span class="${climbing ? "warn" : ""}">` +
+      `${num(proc.rss_peak_mb, 1)} MB</span>` +
+      (growth === null || growth === undefined
+        ? ""
+        : ` · ${growth >= 0 ? "+" : ""}${num(growth, 1)} since start`) +
+      (proc.rss_observed_hours === null || proc.rss_observed_hours === undefined
+        ? ""
+        : ` · ${num(proc.rss_observed_hours, 1)}h`) +
+      `</span>`;
   return `<div class="kv"><span class="k">Resident memory
       <br><span class="dim">growth here precedes the box dying</span></span>
-    <span class="v num">${num(proc.rss_mb, 1)} MB</span></div>`;
+    <span class="v num">${num(proc.rss_mb, 1)} MB${trend}</span></div>`;
 }
 
 /* ----------------------------------------------------------- reference --- */

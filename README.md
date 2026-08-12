@@ -76,7 +76,16 @@ held a credential; every measurement here came from public endpoints.
    callers now go through one `pipeline.assess`, and a test compares the keyword
    sets each passes — equal outputs on one fixture would not have caught it.
 
-   All four questions, in [`docs/NEGATIVE_RESULT.md`](docs/NEGATIVE_RESULT.md)
+8. **Ask which environment production installs into, and whether that is the one
+   under test.** The suite was green on every commit while `pip install -e .` on
+   a clean box could not import the dashboard: `fastapi` and `uvicorn` were
+   imported but never declared, and present in the dev environment by accident.
+   No test that shares the developer's interpreter can see this.
+   `tests/test_clean_install.py` builds a virtualenv from the declared metadata
+   alone and imports every shipped module with it — including imports nested
+   inside functions, which is where `uvicorn` was hiding.
+
+   All five questions, in [`docs/NEGATIVE_RESULT.md`](docs/NEGATIVE_RESULT.md)
    § "The one pattern behind every broken check".
 
 ## Start here

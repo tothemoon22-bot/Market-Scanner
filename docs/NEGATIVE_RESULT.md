@@ -703,14 +703,14 @@ Every trigger now has a pair of tests: fires exactly at its stated threshold,
 silent one step inside it. Before that, the fee-free-series trigger's only
 coverage moved it by 29 against a documented threshold of 3.
 
-**6. And the inversion, which is the same insight paying out.** `bid(YES) +
+**7. And the inversion, which is the same insight paying out.** `bid(YES) +
 bid(NO) > 100¢` is impossible in a correctly reconstructed book. That makes it
 worthless as an opportunity detector — and therefore *valuable* as a continuous
 correctness check on our own ingest: observing it means our book is wrong, not
 that the market is. See the venue notes. That reading is only available once you
 have asked what a check's own failure looks like.
 
-Three of the seven are inside the monitor's own correctness and safety machinery,
+Three of the nine are inside the monitor's own correctness and safety machinery,
 which is the uncomfortable part: the code written specifically to stop the
 project fooling itself is the code most prone to it, because it is written
 against the same mental model as the thing it guards.
@@ -727,7 +727,7 @@ checks that are vacuously consistent, coverage tools that do not cover
 themselves, secret scanners that log the secret they found, retry logic that
 retries the health check that decides whether to retry.
 
-**7. A headline stated on a proxy, twice, falsified by the proxy both times.**
+**8. A headline stated on a proxy, twice, falsified by the proxy both times.**
 This one is not about a check at all. It is about what a document claims, and it
 is the most easily repeated of the set.
 
@@ -763,6 +763,110 @@ was true here from the first draft and nobody noticed, because a proxy claim is
 usually the more vivid one — "costs more than the dollar it is guaranteed to
 pay" reads better than "below the annualized threshold the close decision used".
 Vividness is exactly what makes it tempting and exactly what makes it fragile.
+
+**9. A test suite that inherited its subject's environment.** The entire suite
+was green, on every commit, while `pip install -e .` on a clean machine could not
+start the dashboard at all. `pyproject.toml` declared six runtime dependencies
+and the code imports two that were not among them: `fastapi`, at module scope in
+`dashboard/app.py`, and `uvicorn`, inside `main()`. Both were present in the
+development environment because something else had pulled them in, and no test
+could tell the difference between *declared* and *merely present*. It was found
+the only way it could be — on the real deploy, by hand, and patched there.
+
+This is the same family as item 6 and a different member of it, and the
+distinction is the whole content of the lesson:
+
+> Item 6 was **two code paths in one environment**. This is **one code path in
+> two environments**.
+
+Item 6's defence — unify the paths, then assert the call sites agree — does
+nothing here, because there is only one call site and it is correct. The code
+was never wrong. What differed was the ground it stood on, and a test that runs
+in the developer's interpreter *is* that ground. It cannot observe its own
+substrate any more than the frozen freshness banner in item 2 could observe its
+own clock.
+
+So the fix is the same move as items 1–4 made in a different dimension: source
+the standard from somewhere that excludes the subject. `tests/test_clean_install.py`
+builds a real virtualenv, installs the project from the declared metadata alone,
+and imports the shipped code with *that* interpreter. It fails against the
+pre-fix `pyproject.toml` — reproducing both names — and passes after.
+
+Two details of the check are load-bearing, and both were found by writing it:
+
+- **A module-level import test would have caught only half of it.** `uvicorn` is
+  imported inside `main()`, so `import dashboard.app` succeeds and the process
+  dies when you actually serve. The check therefore walks the AST for every
+  import *anywhere* in shipped code, function bodies included, and imports each
+  name in the clean environment. The list is derived, not maintained.
+- **`websockets` is load-bearing and nothing imports it.** A naive audit would
+  read it as dead weight and delete it. `uvicorn` depends only on `click` and
+  `h11`; with neither `websockets` nor `wsproto` installed it sets
+  `AutoWebSocketsProtocol = None` and rejects the upgrade to `/ws`, which turns
+  the dashboard's live push off — silently, item 5's shape again, one layer
+  down. The clean-environment check asserts the protocol resolves, which is the
+  only statement of the requirement that a dependency-pruning pass cannot talk
+  itself out of.
+
+Two further gaps surfaced in the same audit and are recorded rather than fixed,
+because neither is live:
+
+- Five declared dependencies — `sqlalchemy`, `aiosqlite`, `structlog`, and
+  arguably `pydantic` — are imported by no first-party module. They are
+  scaffolding from the Part 0 design (a storage layer, structured logging) that
+  no part of the finished instrument uses. Removing them is a judgement call
+  about install weight on a small box, not a correctness fix, so it is flagged
+  and not taken.
+- `[tool.setuptools.packages.find] include = ["src*"]` packages *only* `src`.
+  After `pip install -e .`, `dashboard`, `scanner` and `monitor` are importable
+  solely because the working directory is on `sys.path` — verified by importing
+  them from another directory and watching all three fail. Every documented
+  invocation is `python -m ...` from the repository root and the systemd unit
+  sets `WorkingDirectory=/opt/market-scanner`, so nothing is broken today. But
+  that line in the unit file is doing load-bearing work that nothing labels as
+  such, and one relocation would turn it into a deploy failure of exactly the
+  kind above.
+
+The fifth standing question follows:
+
+> **Which environment does production install into, and is that the one under
+> test?**
+
+And the honest note about *why* this survived so long: until this was written,
+no workflow in the repository ran the tests at all. The only Action archived
+ledgers. A suite that runs in exactly one place cannot disagree with itself.
+
+### The divergence class has three shapes, not one
+
+Items 6 and 9 are two members of a family, and a third turned up between them,
+in the fee-change board. Naming all three is worth more than any of the
+individual fixes, because the defence differs for each:
+
+| | Shape | Instance | What it defeats |
+| --- | --- | --- | --- |
+| 1 | Two implementations of one pipeline | `monitor/run.py` vs `scanner/engine.py` — one omitted `fee_changes`, the other omitted `bands` | Signature checks; equal outputs on a fixture lacking the event |
+| 2 | One implementation in two environments | Undeclared `fastapi`/`uvicorn`: green suite, dead deploy | Every test that shares the developer's interpreter |
+| 3 | One computation, two readers applying different definitions | The alert counted *material* fee changes; the board counted *pending* ones, and took the hero slot on 100 routine MLB overrides | Both readers are individually correct and both are reading the same number |
+
+Shape 3 is the subtlest because nothing is duplicated and nothing is missing.
+One value is computed once, and two consumers apply different notions of what it
+means. There is no divergence to find in the code — the divergence is in the
+semantics, and it is visible only when the two renderings are put beside each
+other, which in this case happened on the live board.
+
+The generalization covers all three:
+
+> **Publish the resolved value into shared state; do not pass it as an argument
+> a caller can omit or reinterpret.**
+
+That is why `pipeline.assess` computes `bands` internally instead of accepting
+them (shape 1), and why the fee-change materiality split is written into
+`current["fee_change_split"]` for the trigger board to read rather than handed
+to it as a parameter (shape 3). An argument is an invitation to disagree: to
+forget it, to default it, or to decide it means something slightly different at
+this call site. A single resolved value in shared state removes the invitation.
+Shape 2 is the one this does not reach — there is no argument and no caller, and
+the only defence is to run the thing somewhere that is not your machine.
 
 Item 5 is a separate sub-class, and the reason it needs its own name is that
 the first structure does not describe it. Nothing there drew a bad standard —
@@ -860,6 +964,50 @@ Thresholds on this exchange should be proportions or rates. The `$25`
 capacity × edge floor and the `size ≥ 1` gate are the deliberate exceptions —
 both are absolute because they denominate in money and contracts, which do not
 inflate with listing volume.
+
+### A series that changed definition under itself
+
+> **A gap in a series is visible. A redefinition is not, and every reading on
+> both sides looks equally valid.**
+
+The proximity watch — "no trigger has come within 20% of firing in N days" —
+changed what it measured on **2026-08-12 02:03:11 UTC**, in `509db99`. The
+earlier regime ran from `e3692b5` on **2026-08-04 15:39:37 UTC**, so it stood for
+**7 days 10 hours**. That is not a span that can be waited out, which is why it
+is stated here rather than only in a comment.
+
+What the earlier regime measured: the trigger board was evaluated twice per
+sweep, and the proximity watch read the *earlier* of the two. That board was
+built without `bands` and before the fee-change materiality split existed, so
+the scheduled-fee-change trigger scored proximity on the raw count of pending
+changes against a threshold of "any". Kalshi publishes routine per-event fee
+overrides more or less continuously — 100 pending, every one routine, at the one
+moment a live board was captured. So whenever any were pending the trigger read
+100%, `peak_proximity_pct` sat pinned at 100.0, and `last_within_20_at` was
+refreshed on every sweep.
+
+**The figure therefore read approximately zero, continuously, for a reason with
+no relationship to edge.** The direction matters: the old regime *overstated*
+proximity. It could not have hidden an approach to a threshold; it drowned one.
+
+Nothing has been deleted, backfilled or recomputed. Re-deriving the earlier week
+under the current definition would invent readings that were never taken, and
+that is a worse artifact than the discontinuity. Instead `monitor/discontinuity.py`
+carries a dated, append-only marker naming the commit, both ends of the earlier
+regime, what it measured, and which direction it erred; any window containing the
+boundary is labelled on the dashboard as spanning two definitions rather than
+quoted as a single series. The marker ledger is in the weekly archive, so the
+record of the change outlives the instance.
+
+One honest consequence, which is easy to state backwards. `peak_proximity_pct`
+and `last_within_20_at` are held **in memory only** — there is no proximity
+ledger — so they reset whenever the process restarts. Deploying `509db99`
+restarted the process. The earlier regime's readings are therefore *gone* rather
+than mixed in, and no live window can span the boundary; the marker is
+documentary, and the spanning check is machinery for the next such change rather
+than a live warning about this one. The panel now also quotes the observed
+window alongside the figure, because "0.4 days since" over a 0.4-day window is
+not the claim that "0.4 days since" alone appears to make.
 
 ---
 

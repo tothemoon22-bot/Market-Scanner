@@ -1,0 +1,39 @@
+# The suite, including the clean-environment install check.
+#
+# Until this file existed the only workflow in the repository archived ledgers;
+# nothing ran the tests. That is why an undeclared `fastapi` survived to a
+# deploy: the suite was green on a developer machine that already had it, and
+# there was no second environment to disagree.
+#
+# `tests/test_clean_install.py` is the reason this job builds nothing up front
+# beyond the dev extra -- that test constructs its own virtualenv from the
+# declared metadata alone and must not inherit anything from this one.
+name: Tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -e ".[dev]"
+
+      # No -m filter: the slow clean-install test is the point of this job.
+      - run: python -m pytest -q
+
+      - run: ruff check .
+
+      - run: python tools/secret_scan.py

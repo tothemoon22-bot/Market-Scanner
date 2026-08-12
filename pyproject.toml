@@ -6,10 +6,18 @@ requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.7",
     "httpx>=0.27",
+    # Not imported by any first-party module. It is still load-bearing: uvicorn
+    # requires only click and h11, and `uvicorn/protocols/websockets/auto.py`
+    # sets AutoWebSocketsProtocol to None when neither websockets nor wsproto is
+    # installed -- at which point the server rejects the upgrade to /ws and the
+    # dashboard's live push stops, silently. Do not delete this as unused; the
+    # clean-environment test asserts the protocol resolves.
     "websockets>=12.0",
     "sqlalchemy>=2.0",
     "aiosqlite>=0.20",
     "structlog>=24.1",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +40,9 @@ include = ["src*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "slow: builds a virtualenv and installs the package; needs a package index",
+]
 
 [tool.ruff]
 line-length = 100

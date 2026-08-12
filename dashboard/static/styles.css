@@ -134,10 +134,24 @@ main { padding: 0.75rem; display: flex; flex-direction: column; gap: 0.75rem; }
 .kv .k { color: var(--ink-soft); }
 .kv .v { text-align: right; white-space: nowrap; }
 .kv .v.wrap { white-space: normal; }
+/* A secondary line under a value. The parent is nowrap so the headline number
+   never breaks mid-figure; this wraps instead of pushing the page sideways. */
+.kv .v .sub { display: block; white-space: normal; }
 
 .num { font-variant-numeric: tabular-nums; }
 .good { color: var(--green); }
 .warn { color: var(--amber); }
+
+/* A measurement whose definition changed mid-window. Wraps rather than
+   truncating: the reason is the content, and at 390px a nowrap line would
+   clip it to the commit hash. */
+.warn-inline {
+  color: var(--amber);
+  font-size: 0.82rem;
+  line-height: 1.35;
+  margin-top: 0.35rem;
+  white-space: normal;
+}
 .bad  { color: var(--red); }
 .dim  { color: var(--ink-faint); }
 

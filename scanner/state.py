@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from monitor import reviews
+from monitor import discontinuity, reviews
 from monitor.aggregate import ALERT_DISTINCT_SPREADS, MAX_DISTINCT_SPREADS
 from monitor.archive import ARCHIVE_STALE_AFTER_DAYS
 from scanner import process
@@ -37,6 +37,11 @@ def _mean(samples: deque[float]) -> float | None:
 
 def _drift(achieved: float | None, configured: float | None) -> float | None:
     return None if achieved is None or configured is None else achieved - configured
+
+
+def _mb(nbytes: int | None) -> float | None:
+    """None stays None. An unread gauge is not a gauge reading zero."""
+    return None if nbytes is None else round(nbytes / 1048576, 1)
 
 
 #: Every named subsystem that can fail. Registered up front so one that has
@@ -249,6 +254,14 @@ class ScannerState:
     last_within_20_at: datetime | None = None
     peak_proximity_pct: float | None = None
 
+    #: Memory trend. The current reading alone cannot distinguish steady from
+    #: growing, which is the only thing a 24h memory gate cares about. None
+    #: until the first successful sample -- never zero; see scanner/process.py.
+    rss_first_bytes: int | None = None
+    rss_first_at: datetime | None = None
+    rss_peak_bytes: int | None = None
+    rss_peak_at: datetime | None = None
+
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def source(self, name: str) -> SourceHealth:
@@ -267,6 +280,29 @@ class ScannerState:
 
     def beat(self) -> None:
         self.heartbeat_at = now()
+        self.note_rss()
+
+    def note_rss(self) -> None:
+        """Sample RSS and keep the first and highest readings.
+
+        A single current value cannot answer the question a 24-hour memory gate
+        actually asks, which is whether the number is *growing*. 73 MB steady
+        and 73 MB on the way up render identically, and telling them apart
+        otherwise means either watching the panel for a day or shelling in.
+        Three integers make the trend readable in one glance.
+
+        Deliberately not a series: a memory gauge that accumulates samples
+        shares the failure mode of the thing it measures.
+        """
+        rss = process.rss_bytes()
+        if rss is None:
+            return
+        if self.rss_first_bytes is None:
+            self.rss_first_bytes = rss
+            self.rss_first_at = now()
+        if self.rss_peak_bytes is None or rss > self.rss_peak_bytes:
+            self.rss_peak_bytes = rss
+            self.rss_peak_at = now()
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -279,7 +315,26 @@ class ScannerState:
                 "heartbeat_age_seconds": heartbeat_age,
                 "uptime_seconds": (now() - self.started_at).total_seconds(),
                 "started_at": self.started_at.isoformat(),
-                "process": process.as_dict(),
+                "process": {
+                    **process.as_dict(),
+                    "rss_first_bytes": self.rss_first_bytes,
+                    "rss_first_mb": _mb(self.rss_first_bytes),
+                    "rss_peak_bytes": self.rss_peak_bytes,
+                    "rss_peak_mb": _mb(self.rss_peak_bytes),
+                    "rss_peak_at": (
+                        self.rss_peak_at.isoformat() if self.rss_peak_at else None
+                    ),
+                    "rss_growth_mb": (
+                        None
+                        if self.rss_first_bytes is None or self.rss_peak_bytes is None
+                        else round((self.rss_peak_bytes - self.rss_first_bytes) / 1048576, 1)
+                    ),
+                    "rss_observed_hours": (
+                        None
+                        if self.rss_first_at is None
+                        else (now() - self.rss_first_at).total_seconds() / 3600
+                    ),
+                },
                 "metrics": self.metrics,
                 "metrics_age_seconds": _age(self.metrics_at),
                 "sweep": {
@@ -321,6 +376,16 @@ class ScannerState:
                         else (now() - self.last_within_20_at).total_seconds() / 86400
                     ),
                     "peak_proximity_pct": self.peak_proximity_pct,
+                    # A window that contains a definition change is measured
+                    # under two definitions, and every figure above is a
+                    # statement about both. Published rather than corrected:
+                    # see monitor/discontinuity.py.
+                    "discontinuities": [
+                        m.as_dict()
+                        for m in discontinuity.spanning(
+                            self.observing_since, now(), "proximity_watch"
+                        )
+                    ],
                 },
                 "bands": self.bands,
                 "below_par": self.below_par,
